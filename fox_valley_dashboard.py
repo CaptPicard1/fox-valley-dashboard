@@ -1,6 +1,6 @@
 # ============================================
-# FOX VALLEY TACTICAL DASHBOARD v4 – Nov 2025
-# Daily Tactical Intelligence + Auto Zacks Loader (Dark Mode)
+# FOX VALLEY TACTICAL DASHBOARD v4.1 – Nov 2025
+# Daily Tactical Intelligence + Auto Zacks Loader + Narrative Overlay (Dark Mode)
 # ============================================
 
 import streamlit as st
@@ -12,7 +12,7 @@ import datetime
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Tactical Dashboard v4 – Daily Intelligence",
+    page_title="Fox Valley Tactical Dashboard v4.1 – Daily Intelligence",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -27,8 +27,6 @@ st.markdown("""
         .rank1 {background-color:#004d00 !important;}
         .rank2 {background-color:#665c00 !important;}
         .rank3 {background-color:#663300 !important;}
-        .gain {color:#00ff88 !important;}
-        .loss {color:#ff6666 !important;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -46,14 +44,14 @@ cash_row = portfolio[portfolio["Ticker"].str.contains("SPAXX", na=False)]
 cash_value = cash_row["Value"].sum()
 
 # ---------- AUTO-DETECT LATEST ZACKS FILES ----------
-def get_latest_zacks_file(pattern):
+def get_latest_zacks_file(pattern: str):
     files = Path("data").glob(pattern)
     date_pattern = re.compile(r"(\d{4}-\d{2}-\d{2})")
     dated_files = []
     for f in files:
-        m = date_pattern.search(str(f))
-        if m:
-            dated_files.append((m.group(1), f))
+        match = date_pattern.search(str(f))
+        if match:
+            dated_files.append((match.group(1), f))
     if dated_files:
         latest = max(dated_files)[1]
         return str(latest)
@@ -63,7 +61,7 @@ G1_PATH = get_latest_zacks_file("zacks_custom_screen_*_Growth1.csv")
 G2_PATH = get_latest_zacks_file("zacks_custom_screen_*_Growth2.csv")
 DD_PATH = get_latest_zacks_file("zacks_custom_screen_*_DefensiveDividend.csv")
 
-def safe_read(path):
+def safe_read(path: str | None):
     if path is None:
         return pd.DataFrame()
     try:
@@ -75,27 +73,27 @@ g1_raw = safe_read(G1_PATH)
 g2_raw = safe_read(G2_PATH)
 dd_raw = safe_read(DD_PATH)
 
-# ---------- SIDEBAR STATUS ----------
+# ---------- SIDEBAR ----------
 if not g1_raw.empty or not g2_raw.empty or not dd_raw.empty:
     st.sidebar.success("✅ Latest Zacks files auto-detected from /data")
 else:
-    st.sidebar.error("⚠️ No valid Zacks CSVs found in /data folder.")
+    st.sidebar.error("⚠️ No valid Zacks CSVs found in /data folder. Upload Nov 3 screens tomorrow.")
 
-# ---------- NORMALIZATION + CROSSMATCH ----------
-def normalize_zacks(df):
+# ---------- NORMALIZE + CROSSMATCH ----------
+def normalize_zacks(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     ticker_cols = [c for c in df.columns if "ticker" in c.lower() or "symbol" in c.lower()]
     if ticker_cols:
-        df.rename(columns={ticker_cols[0]: "Ticker"}, inplace=True)
+        df = df.rename(columns={ticker_cols[0]: "Ticker"})
     if "Zacks Rank" not in df.columns:
         rank_cols = [c for c in df.columns if "rank" in c.lower()]
         if rank_cols:
-            df.rename(columns={rank_cols[0]: "Zacks Rank"}, inplace=True)
+            df = df.rename(columns={rank_cols[0]: "Zacks Rank"})
     keep = [c for c in ["Ticker", "Zacks Rank"] if c in df.columns]
     return df[keep].copy()
 
-def cross_match(zdf, pf):
+def cross_match(zdf: pd.DataFrame, pf: pd.DataFrame) -> pd.DataFrame:
     if zdf.empty:
         return pd.DataFrame()
     pf_tickers = pf[["Ticker"]].astype(str)
@@ -108,6 +106,63 @@ def cross_match(zdf, pf):
 g1 = normalize_zacks(g1_raw)
 g2 = normalize_zacks(g2_raw)
 dd = normalize_zacks(dd_raw)
+
+# ---------- INTELLIGENCE ENGINE ----------
+def build_intel_overlay(portfolio_df: pd.DataFrame,
+                        g1_df: pd.DataFrame,
+                        g2_df: pd.DataFrame,
+                        dd_df: pd.DataFrame,
+                        cash_val: float,
+                        total_val: float) -> dict:
+    """Build AI tactical narrative and cross-summary."""
+    combined = pd.concat([g1_df, g2_df, dd_df], axis=0, ignore_index=True)
+    if not combined.empty:
+        combined = combined.drop_duplicates(subset=["Ticker"])
+    held_tickers = set(portfolio_df["Ticker"].astype(str).tolist())
+    rank1 = combined[combined["Zacks Rank"] == 1] if "Zacks Rank" in combined.columns else pd.DataFrame()
+    new_rank1 = rank1[~rank1["Ticker"].isin(held_tickers)] if not rank1.empty else pd.DataFrame()
+    held_rank1 = rank1[rank1["Ticker"].isin(held_tickers)] if not rank1.empty else pd.DataFrame()
+
+    cash_pct = (cash_val / total_val) * 100 if total_val > 0 else 0
+
+    pieces = []
+    pieces.append("Fox Valley Tactical Intelligence – Daily Overlay")
+    pieces.append(f"- Portfolio value: ${total_val:,.2f}")
+    pieces.append(f"- Cash on hand (SPAXX): ${cash_val:,.2f} ({cash_pct:.2f}%)")
+
+    if not rank1.empty:
+        pieces.append(f"- Zacks Rank #1 symbols detected today: {len(rank1)}")
+    else:
+        pieces.append("- No Zacks Rank #1 symbols detected in today’s screens.")
+
+    if not new_rank1.empty:
+        pieces.append(f"- New #1 candidates NOT YET HELD: {len(new_rank1)} → PRIORITY SCAN")
+    else:
+        pieces.append("- No new #1s outside current holdings.")
+
+    if not held_rank1.empty:
+        pieces.append(f"- Held positions still at #1: {len(held_rank1)} → MAINTAIN / MONITOR")
+    else:
+        pieces.append("- None of the current holdings are at Zacks #1 today.")
+
+    if cash_pct < 5:
+        pieces.append("⚠️ Cash is tight — avoid overcommitting unless signal is very strong.")
+    elif cash_pct > 25:
+        pieces.append("🟡 Cash elevated — consider deploying into top new #1s or defensive dividends.")
+    else:
+        pieces.append("🟢 Cash in tactical range — standard buy/trims can be executed.")
+
+    narrative = "\n".join(pieces)
+
+    return {
+        "narrative": narrative,
+        "combined": combined,
+        "new_rank1": new_rank1,
+        "held_rank1": held_rank1,
+        "cash_pct": cash_pct
+    }
+
+intel = build_intel_overlay(portfolio, g1, g2, dd, cash_value, total_value)
 
 # ---------- MAIN TABS ----------
 tabs = st.tabs([
@@ -190,95 +245,50 @@ with tabs[3]:
     else:
         st.info("No valid Zacks Defensive Dividend data detected.")
 
-# --- Tactical Summary ---
-with tabs[4]:
-    st.subheader("🧩 Weekly Tactical Summary – Automated Intelligence")
-    portfolio["GainLoss%"] = pd.to_numeric(portfolio["GainLoss%"], errors="coerce")
-    avg_gain = portfolio["GainLoss%"].mean()
-    st.metric("Total Value", f"${total_value:,.2f}")
-    st.metric("Avg Gain/Loss %", f"{avg_gain:.2f}%")
-
-    st.markdown("**Top 3 Gainers**")
-    st.dataframe(portfolio.nlargest(3, "GainLoss%")[["Ticker", "GainLoss%"]])
-    st.markdown("**Top 3 Decliners**")
-    st.dataframe(portfolio.nsmallest(3, "GainLoss%")[["Ticker", "GainLoss%"]])
-
-    st.markdown("---")
-    st.markdown("### 🧠 Tactical Intelligence Feed")
-    combined = pd.concat([g1, g2, dd], axis=0, ignore_index=True).drop_duplicates(subset=["Ticker"])
-    if not combined.empty:
-        held = combined.merge(portfolio[["Ticker"]], on="Ticker", how="inner")
-        new = combined[~combined["Ticker"].isin(portfolio["Ticker"])]
-        st.markdown("**🟢 New Zacks Rank #1 Candidates:**")
-        st.dataframe(new)
-        st.markdown("**✔ Held Positions Still Active:**")
-        st.dataframe(held)
-    else:
-        st.info("Zacks data unavailable for tactical analysis.")
-
-    cash_pct = (cash_value / total_value) * 100 if total_value > 0 else 0
-    st.markdown("---")
-    st.metric("Cash (SPAXX)", f"${cash_value:,.2f}")
-    st.metric("Cash % of Account", f"{cash_pct:.2f}%")
-
-    if cash_pct < 5:
-        st.warning("⚠️ Low cash reserves — limited buy power.")
-    elif cash_pct > 25:
-        st.info("🟡 Elevated cash — consider redeployment.")
-    else:
-        st.success("🟢 Balanced liquidity for tactical flexibility.")
-
 # --- Daily Intelligence Brief ---
 with tabs[5]:
     st.subheader("📖 Fox Valley Daily Intelligence Brief")
+    st.markdown("#### 🧠 AI Tactical Narrative")
+    st.markdown(f"```text\n{intel['narrative']}\n```")
     now = datetime.datetime.now().strftime("%A, %B %d, %Y – %I:%M %p CST")
     st.caption(f"Generated: {now}")
 
-    if not g1.empty and not g2.empty and not dd.empty:
-        # --- Build Key Observations ---
-        total_candidates = len(pd.concat([g1, g2, dd]))
-        held_matches = len(portfolio[portfolio["Ticker"].isin(pd.concat([g1, g2, dd])["Ticker"])])
-        rank1_total = len(pd.concat([g1, g2, dd])[pd.concat([g1, g2, dd])["Zacks Rank"] == 1])
-
-        st.markdown(f"""
-        **Tactical Snapshot**
-        - Total Portfolio Holdings: `{len(portfolio)}`
-        - Active Zacks Candidates Today: `{total_candidates}`
-        - Held Positions Matching Zacks Lists: `{held_matches}`
-        - Zacks Rank #1 Opportunities: `{rank1_total}`
-        """)
-
-        st.markdown("---")
-        st.markdown("### 🔍 Zacks Rank #1 Highlights (All Screens)")
-        rank1_df = pd.concat([g1, g2, dd])
-        rank1_df = rank1_df[rank1_df["Zacks Rank"] == 1]
-        st.dataframe(rank1_df, use_container_width=True)
-
-        st.markdown("---")
-        st.markdown("### ⚙️ Tactical Actions")
-        st.markdown("""
-        - 🟢 Review Zacks Rank #1 stocks not yet held.
-        - 🟠 Trim or monitor holdings that have lost #1 status.
-        - ⚪ Maintain readiness in SPAXX for opportunistic entries.
-        """)
+    st.markdown("### 🟢 New Zacks Rank #1 Candidates (Not Currently Held)")
+    if not intel["new_rank1"].empty:
+        st.dataframe(intel["new_rank1"], use_container_width=True)
     else:
-        st.info("Awaiting upload of new daily Zacks screens for intelligence generation.")
+        st.info("No NEW Rank #1 candidates outside current holdings today.")
 
-# --- Auto Summary Writer ---
+    st.markdown("### ✔ Held Positions Still Zacks #1")
+    if not intel["held_rank1"].empty:
+        st.dataframe(intel["held_rank1"], use_container_width=True)
+    else:
+        st.info("None of the current holdings are Rank #1 in today’s screens.")
+
+    st.markdown("### 📋 Full Combined Zacks View (Growth1 + Growth2 + Defensive)")
+    if not intel["combined"].empty:
+        st.dataframe(intel["combined"], use_container_width=True)
+    else:
+        st.info("Upload new Zacks files to populate this view.")
+
+# --- Automated Tactical Summary File Generation ---
 def generate_tactical_summary():
     now = datetime.datetime.now()
     fname = f"data/tactical_summary_{now.strftime('%Y-%m-%d')}.md"
-    with open(fname, "w", encoding="utf-8") as f:
-        f.write(f"# Fox Valley Tactical Summary – {now:%B %d, %Y}\n")
-        f.write(f"**Total Value:** ${total_value:,.2f}\n")
-        f.write(f"**Cash:** ${cash_value:,.2f}\n\n")
-        f.write("## Tactical Guidance\n")
-        f.write("- 🟢 Buy Zacks Rank #1 candidates\n")
-        f.write("- 🟠 Trim lagging positions\n")
-        f.write("- ⚪ Maintain liquidity balance\n")
-    st.success(f"Tactical summary exported → {fname}")
+    try:
+        with open(fname, "w", encoding="utf-8") as f:
+            f.write(f"# Fox Valley Tactical Summary – {now:%B %d, %Y}\n")
+            f.write(f"**Total Value:** ${total_value:,.2f}\n")
+            f.write(f"**Cash:** ${cash_value:,.2f}\n\n")
+            f.write("## Tactical Intelligence\n")
+            f.write(intel["narrative"])
+            f.write("\n\n## Notes\n")
+            f.write("- Generated automatically by Fox Valley Tactical Dashboard v4.1\n")
+        st.success(f"Tactical summary exported → {fname}")
+    except Exception as e:
+        st.error(f"Failed to write tactical summary: {e}")
 
 # --- Auto-Run at 06:45 AM Daily ---
 now = datetime.datetime.now()
-if now.hour == 6 and now.minute >= 45 and now.minute < 55:
+if now.hour == 6 and 45 <= now.minute < 55:
     generate_tactical_summary()
