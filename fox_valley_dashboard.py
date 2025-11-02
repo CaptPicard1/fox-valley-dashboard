@@ -128,4 +128,4 @@ with tabs[3]:
 
 st.markdown("---")
 st.caption("Automation hook ready for Sunday 07:00 CST tactical summary.")
-Fix accidental text after caption line
+
