@@ -127,4 +127,5 @@ with tabs[3]:
         st.info("Upload Defensive Dividend CSV in sidebar to view results.")
 
 st.markdown("---")
-st.caption("Automation hook ready for Sunday 07:00 CST tactical summary.")
+st.caption("Automation hook ready for Sunday 07:00 CST tactical summary.")Replace with Tactical v3 build (verified)
+
