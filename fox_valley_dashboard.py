@@ -31,17 +31,19 @@ st.markdown("""
 def load_portfolio():
     df = pd.read_csv("data/portfolio_data.csv")
     df["GainLoss%"] = pd.to_numeric(df["GainLoss%"], errors="coerce")
+    df["Value"] = pd.to_numeric(df["Value"], errors="coerce")
     return df
 
 portfolio = load_portfolio()
-total_value = portfolio["Value"].astype(float).sum()
+total_value = portfolio["Value"].sum()
 
 # ---------- DASHBOARD HEADER ----------
 st.title("🧭 Fox Valley Tactical Dashboard v3")
 col1, col2 = st.columns(2)
 col1.metric("Total Account Value", f"${total_value:,.2f}")
+
 cash_row = portfolio[portfolio["Ticker"].str.contains("SPAXX", na=False)]
-cash_value = cash_row["Value"].astype(float).sum()
+cash_value = cash_row["Value"].sum()
 col2.metric("Cash – SPAXX (Money Market)", f"${cash_value:,.2f}")
 
 st.markdown("---")
@@ -77,32 +79,31 @@ def normalize_zacks(df: pd.DataFrame) -> pd.DataFrame:
         rank_cols = [c for c in df.columns if "rank" in c.lower()]
         if rank_cols:
             df = df.rename(columns={rank_cols[0]: "Zacks Rank"})
-    keep = []
-    if "Ticker" in df.columns:
-        keep.append("Ticker")
-    if "Zacks Rank" in df.columns:
-        keep.append("Zacks Rank")
-    df = df[keep].copy()
-    return df
+    keep = [c for c in ["Ticker", "Zacks Rank"] if c in df.columns]
+    return df[keep].copy()
 
 def cross_match(zacks_df: pd.DataFrame, portfolio_df: pd.DataFrame) -> pd.DataFrame:
     if zacks_df.empty:
-        return zacks_df
-    pf = portfolio_df[["Ticker"]].copy()
-    pf["Ticker"] = pf["Ticker"].astype(str)
+        return pd.DataFrame()
+    pf = portfolio_df[["Ticker"]].astype(str)
     zacks_df["Ticker"] = zacks_df["Ticker"].astype(str)
     merged = zacks_df.merge(pf, on="Ticker", how="left", indicator=True)
     merged["Held?"] = merged["_merge"].map({"both": "✔ Held", "left_only": "🟢 Candidate"})
     merged.drop(columns=["_merge"], inplace=True)
     return merged
 
-# ---------- NORMALIZE ZACKS ----------
 g1 = normalize_zacks(g1_raw)
 g2 = normalize_zacks(g2_raw)
 dd = normalize_zacks(dd_raw)
 
 # ---------- MAIN TABS ----------
-tabs = st.tabs(["💼 Portfolio Overview", "📊 Growth 1", "📊 Growth 2", "💰 Defensive Dividend"])
+tabs = st.tabs([
+    "💼 Portfolio Overview",
+    "📊 Growth 1",
+    "📊 Growth 2",
+    "💰 Defensive Dividend",
+    "🧩 Tactical Summary"
+])
 
 # --- Portfolio Overview ---
 with tabs[0]:
@@ -110,8 +111,13 @@ with tabs[0]:
     st.dataframe(portfolio, use_container_width=True)
 
     if not portfolio.empty:
-        fig1 = px.pie(portfolio, values="Value", names="Ticker",
-                      title="Portfolio Allocation", hole=0.3)
+        fig1 = px.pie(
+            portfolio,
+            values="Value",
+            names="Ticker",
+            title="Portfolio Allocation",
+            hole=0.3
+        )
         st.plotly_chart(fig1, use_container_width=True)
     else:
         st.info("No portfolio data found in /data/portfolio_data.csv")
@@ -123,11 +129,12 @@ with tabs[1]:
         g1_matched = cross_match(g1, portfolio)
         st.dataframe(
             g1_matched.style.map(
-                lambda val: "background-color: #004d00" if str(val) == "1"
-                else "background-color: #665c00" if str(val) == "2"
-                else "background-color: #663300" if str(val) == "3"
-                else ""
-            , subset=["Zacks Rank"]),
+                lambda v: "background-color: #004d00" if str(v) == "1"
+                else "background-color: #665c00" if str(v) == "2"
+                else "background-color: #663300" if str(v) == "3"
+                else "",
+                subset=["Zacks Rank"]
+            ),
             use_container_width=True
         )
     else:
@@ -140,11 +147,12 @@ with tabs[2]:
         g2_matched = cross_match(g2, portfolio)
         st.dataframe(
             g2_matched.style.map(
-                lambda val: "background-color: #004d00" if str(val) == "1"
-                else "background-color: #665c00" if str(val) == "2"
-                else "background-color: #663300" if str(val) == "3"
-                else ""
-            , subset=["Zacks Rank"]),
+                lambda v: "background-color: #004d00" if str(v) == "1"
+                else "background-color: #665c00" if str(v) == "2"
+                else "background-color: #663300" if str(v) == "3"
+                else "",
+                subset=["Zacks Rank"]
+            ),
             use_container_width=True
         )
     else:
@@ -157,15 +165,92 @@ with tabs[3]:
         dd_matched = cross_match(dd, portfolio)
         st.dataframe(
             dd_matched.style.map(
-                lambda val: "background-color: #004d00" if str(val) == "1"
-                else "background-color: #665c00" if str(val) == "2"
-                else "background-color: #663300" if str(val) == "3"
-                else ""
-            , subset=["Zacks Rank"]),
+                lambda v: "background-color: #004d00" if str(v) == "1"
+                else "background-color: #665c00" if str(v) == "2"
+                else "background-color: #663300" if str(v) == "3"
+                else "",
+                subset=["Zacks Rank"]
+            ),
             use_container_width=True
         )
     else:
         st.info("Zacks Defensive Dividend screen not found or empty in /data.")
 
-st.markdown("---")
-st.caption("Automation hook ready for Sunday 07:00 CST tactical summary.")
+# --- Tactical Summary ---
+with tabs[4]:
+    st.subheader("Weekly Tactical Summary – Zacks Integration")
+
+    # --- Portfolio Snapshot ---
+    st.markdown("### 📈 Portfolio Performance Overview")
+    try:
+        portfolio["GainLoss%"] = pd.to_numeric(portfolio["GainLoss%"], errors="coerce")
+        total_value = portfolio["Value"].sum()
+        avg_gain = portfolio["GainLoss%"].mean()
+
+        st.metric("Total Portfolio Value", f"${total_value:,.2f}")
+        st.metric("Average Gain/Loss %", f"{avg_gain:.2f}%")
+
+        top_gainers = portfolio.nlargest(3, "GainLoss%")[["Ticker", "GainLoss%"]]
+        top_losers = portfolio.nsmallest(3, "GainLoss%")[["Ticker", "GainLoss%"]]
+
+        st.markdown("**Top 3 Gainers**")
+        st.dataframe(top_gainers, hide_index=True, use_container_width=True)
+
+        st.markdown("**Top 3 Decliners**")
+        st.dataframe(top_losers, hide_index=True, use_container_width=True)
+    except Exception as e:
+        st.warning(f"Unable to compute performance: {e}")
+
+    # --- Zacks Intelligence Feed ---
+    st.markdown("---")
+    st.markdown("### 🧩 Zacks Rank Cross-Analysis")
+
+    def summarize_zacks_changes(zdf, pf):
+        if zdf.empty:
+            return pd.DataFrame()
+        merged = zdf.merge(pf[["Ticker"]], on="Ticker", how="left", indicator=True)
+        merged["Status"] = merged["_merge"].map({"both": "✔ Held", "left_only": "🟢 New Candidate"})
+        merged.drop(columns="_merge", inplace=True)
+        return merged
+
+    combined_zacks = pd.concat([g1, g2, dd], axis=0, ignore_index=True).drop_duplicates(subset=["Ticker"])
+
+    if not combined_zacks.empty:
+        merged_status = summarize_zacks_changes(combined_zacks, portfolio)
+        rank1_new = merged_status[(merged_status["Zacks Rank"] == 1) & (merged_status["Status"] == "🟢 New Candidate")]
+        rank_drops = portfolio[~portfolio["Ticker"].isin(combined_zacks[combined_zacks["Zacks Rank"] == 1]["Ticker"])]
+
+        st.markdown("#### 🟢 New Zacks #1 Rank Candidates (Not Held)")
+        st.dataframe(rank1_new, hide_index=True, use_container_width=True)
+
+        st.markdown("#### 🟠 Held Positions No Longer Zacks #1")
+        st.dataframe(rank_drops[["Ticker", "Value"]], hide_index=True, use_container_width=True)
+    else:
+        st.info("Zacks data not available for analysis.")
+
+    # --- Cash & Buy Power ---
+    st.markdown("---")
+    st.markdown("### 💰 Cash and Buy Power")
+    cash_total = cash_value
+    cash_percent = (cash_total / total_value) * 100 if total_value > 0 else 0
+
+    st.metric("Cash (SPAXX)", f"${cash_total:,.2f}")
+    st.metric("Cash as % of Account", f"{cash_percent:.2f}%")
+
+    if cash_percent < 5:
+        st.warning("⚠️ Low cash reserves — limited buy flexibility.")
+    elif cash_percent > 25:
+        st.info("🟡 Cash levels elevated — review deployment options.")
+    else:
+        st.success("🟢 Cash allocation balanced for tactical flexibility.")
+
+    # --- Action Recommendations ---
+    st.markdown("---")
+    st.markdown("### 🎯 Tactical Action Plan")
+    st.markdown("""
+    - 🟢 **Potential Buys:** New Zacks Rank #1 stocks not currently held.
+    - 🟠 **Review / Trim:** Held stocks that have lost Zacks Rank #1 status.
+    - ⚪ **Hold / Monitor:** Current holdings still Zacks Rank #1.
+    """)
+
+    st.caption("Next tactical update scheduled for Sunday 07:00 CST.")
