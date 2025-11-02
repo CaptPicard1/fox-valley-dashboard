@@ -1,6 +1,6 @@
 # ============================================
-# FOX VALLEY TACTICAL DASHBOARD v3 – Nov 2025
-# Automated Zacks Loader + Tactical Summary (Dark Mode)
+# FOX VALLEY TACTICAL DASHBOARD v4 – Nov 2025
+# Daily Tactical Intelligence + Auto Zacks Loader (Dark Mode)
 # ============================================
 
 import streamlit as st
@@ -12,7 +12,7 @@ import datetime
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Tactical Dashboard v3",
+    page_title="Fox Valley Tactical Dashboard v4 – Daily Intelligence",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -27,6 +27,8 @@ st.markdown("""
         .rank1 {background-color:#004d00 !important;}
         .rank2 {background-color:#665c00 !important;}
         .rank3 {background-color:#663300 !important;}
+        .gain {color:#00ff88 !important;}
+        .loss {color:#ff6666 !important;}
     </style>
 """, unsafe_allow_html=True)
 
@@ -73,12 +75,13 @@ g1_raw = safe_read(G1_PATH)
 g2_raw = safe_read(G2_PATH)
 dd_raw = safe_read(DD_PATH)
 
+# ---------- SIDEBAR STATUS ----------
 if not g1_raw.empty or not g2_raw.empty or not dd_raw.empty:
     st.sidebar.success("✅ Latest Zacks files auto-detected from /data")
 else:
     st.sidebar.error("⚠️ No valid Zacks CSVs found in /data folder.")
 
-# ---------- NORMALIZE + MATCH ----------
+# ---------- NORMALIZATION + CROSSMATCH ----------
 def normalize_zacks(df):
     if df.empty:
         return df
@@ -112,7 +115,8 @@ tabs = st.tabs([
     "📊 Growth 1",
     "📊 Growth 2",
     "💰 Defensive Dividend",
-    "🧩 Tactical Summary"
+    "🧩 Tactical Summary",
+    "📖 Daily Intelligence Brief"
 ])
 
 # --- Portfolio Overview ---
@@ -189,8 +193,6 @@ with tabs[3]:
 # --- Tactical Summary ---
 with tabs[4]:
     st.subheader("🧩 Weekly Tactical Summary – Automated Intelligence")
-
-    st.markdown("### 📈 Portfolio Overview")
     portfolio["GainLoss%"] = pd.to_numeric(portfolio["GainLoss%"], errors="coerce")
     avg_gain = portfolio["GainLoss%"].mean()
     st.metric("Total Value", f"${total_value:,.2f}")
@@ -198,12 +200,11 @@ with tabs[4]:
 
     st.markdown("**Top 3 Gainers**")
     st.dataframe(portfolio.nlargest(3, "GainLoss%")[["Ticker", "GainLoss%"]])
-
     st.markdown("**Top 3 Decliners**")
     st.dataframe(portfolio.nsmallest(3, "GainLoss%")[["Ticker", "GainLoss%"]])
 
     st.markdown("---")
-    st.markdown("### 🧠 Tactical Analysis")
+    st.markdown("### 🧠 Tactical Intelligence Feed")
     combined = pd.concat([g1, g2, dd], axis=0, ignore_index=True).drop_duplicates(subset=["Ticker"])
     if not combined.empty:
         held = combined.merge(portfolio[["Ticker"]], on="Ticker", how="inner")
@@ -215,9 +216,8 @@ with tabs[4]:
     else:
         st.info("Zacks data unavailable for tactical analysis.")
 
-    st.markdown("---")
-    st.markdown("### 💰 Cash & Allocation")
     cash_pct = (cash_value / total_value) * 100 if total_value > 0 else 0
+    st.markdown("---")
     st.metric("Cash (SPAXX)", f"${cash_value:,.2f}")
     st.metric("Cash % of Account", f"{cash_pct:.2f}%")
 
@@ -228,28 +228,57 @@ with tabs[4]:
     else:
         st.success("🟢 Balanced liquidity for tactical flexibility.")
 
-    st.markdown("---")
-    st.markdown("### 🎯 Tactical Plan")
-    st.markdown("""
-    - 🟢 **Potential Buys:** New Zacks Rank #1 candidates.
-    - 🟠 **Review:** Positions that lost Zacks Rank #1.
-    - ⚪ **Hold:** Active #1s with stable momentum.
-    """)
+# --- Daily Intelligence Brief ---
+with tabs[5]:
+    st.subheader("📖 Fox Valley Daily Intelligence Brief")
+    now = datetime.datetime.now().strftime("%A, %B %d, %Y – %I:%M %p CST")
+    st.caption(f"Generated: {now}")
 
-# --- Automated Tactical Summary File Generation ---
+    if not g1.empty and not g2.empty and not dd.empty:
+        # --- Build Key Observations ---
+        total_candidates = len(pd.concat([g1, g2, dd]))
+        held_matches = len(portfolio[portfolio["Ticker"].isin(pd.concat([g1, g2, dd])["Ticker"])])
+        rank1_total = len(pd.concat([g1, g2, dd])[pd.concat([g1, g2, dd])["Zacks Rank"] == 1])
+
+        st.markdown(f"""
+        **Tactical Snapshot**
+        - Total Portfolio Holdings: `{len(portfolio)}`
+        - Active Zacks Candidates Today: `{total_candidates}`
+        - Held Positions Matching Zacks Lists: `{held_matches}`
+        - Zacks Rank #1 Opportunities: `{rank1_total}`
+        """)
+
+        st.markdown("---")
+        st.markdown("### 🔍 Zacks Rank #1 Highlights (All Screens)")
+        rank1_df = pd.concat([g1, g2, dd])
+        rank1_df = rank1_df[rank1_df["Zacks Rank"] == 1]
+        st.dataframe(rank1_df, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("### ⚙️ Tactical Actions")
+        st.markdown("""
+        - 🟢 Review Zacks Rank #1 stocks not yet held.
+        - 🟠 Trim or monitor holdings that have lost #1 status.
+        - ⚪ Maintain readiness in SPAXX for opportunistic entries.
+        """)
+    else:
+        st.info("Awaiting upload of new daily Zacks screens for intelligence generation.")
+
+# --- Auto Summary Writer ---
 def generate_tactical_summary():
     now = datetime.datetime.now()
     fname = f"data/tactical_summary_{now.strftime('%Y-%m-%d')}.md"
     with open(fname, "w", encoding="utf-8") as f:
         f.write(f"# Fox Valley Tactical Summary – {now:%B %d, %Y}\n")
         f.write(f"**Total Value:** ${total_value:,.2f}\n")
-        f.write(f"**Cash:** ${cash_value:,.2f} ({cash_pct:.2f}%)\n\n")
-        f.write("## Tactical Plan\n")
+        f.write(f"**Cash:** ${cash_value:,.2f}\n\n")
+        f.write("## Tactical Guidance\n")
         f.write("- 🟢 Buy Zacks Rank #1 candidates\n")
         f.write("- 🟠 Trim lagging positions\n")
         f.write("- ⚪ Maintain liquidity balance\n")
     st.success(f"Tactical summary exported → {fname}")
 
+# --- Auto-Run at 06:45 AM Daily ---
 now = datetime.datetime.now()
-if now.weekday() == 6 and now.hour == 7:
+if now.hour == 6 and now.minute >= 45 and now.minute < 55:
     generate_tactical_summary()
