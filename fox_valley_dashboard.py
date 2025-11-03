@@ -1,6 +1,6 @@
 # ============================================
-# FOX VALLEY INTELLIGENCE ENGINE v5.4 – Nov 2025
-# Zacks Tactical Rank Delta System + Alert Engine + Tactical Decision Matrix
+# FOX VALLEY INTELLIGENCE ENGINE v5.5 – Nov 2025
+# Zacks Tactical Rank Delta System + Alert Engine + Decision Matrix + Trailing-Stop Journal
 # ============================================
 
 import streamlit as st
@@ -12,7 +12,7 @@ import datetime
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v5.4",
+    page_title="Fox Valley Intelligence Engine v5.5",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -33,9 +33,7 @@ st.markdown("""
 # =====================================================
 # FILE MAINTENANCE – CLEANUP OLD ZACKS CSVs (> 7 DAYS)
 # =====================================================
-
 def cleanup_old_files():
-    """Remove Zacks CSVs older than 7 days; keep recent ones for alerts."""
     data_path = Path("data")
     removed = []
     if not data_path.exists():
@@ -43,9 +41,9 @@ def cleanup_old_files():
     cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
     for f in data_path.glob("zacks_custom_screen_*.csv"):
         try:
-            match = re.search(r"(\d{4}-\d{2}-\d{2})", str(f))
-            if match:
-                file_date = datetime.datetime.strptime(match.group(1), "%Y-%m-%d")
+            m = re.search(r"(\d{4}-\d{2}-\d{2})", str(f))
+            if m:
+                file_date = datetime.datetime.strptime(m.group(1), "%Y-%m-%d")
                 if file_date < cutoff:
                     f.unlink()
                     removed.append(f.name)
@@ -59,7 +57,6 @@ last_cleanup = datetime.datetime.now().strftime("%Y-%m-%d %H:%M CST")
 # ============================
 # LOAD CORE PORTFOLIO DATA
 # ============================
-
 @st.cache_data
 def load_portfolio():
     df = pd.read_csv("data/portfolio_data.csv")
@@ -76,9 +73,7 @@ cash_value = portfolio.loc[
 # ==============================
 # ZACKS FILE DISCOVERY HELPERS
 # ==============================
-
 def get_sorted_zacks(pattern: str):
-    """Return sorted list of (date, file) tuples, newest → oldest."""
     files = Path("data").glob(pattern)
     date_pattern = re.compile(r"(\d{4}-\d{2}-\d{2})")
     dated = []
@@ -97,7 +92,6 @@ def safe_read(path: str | None) -> pd.DataFrame:
         return pd.DataFrame()
 
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
-    """Standardize Zacks frame to Ticker + Zacks Rank."""
     if df.empty:
         return df
     tick = [c for c in df.columns if "ticker" in c.lower() or "symbol" in c.lower()]
@@ -113,7 +107,6 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
 # ----------------------------------------
 # Detect today + previous Zacks files
 # ----------------------------------------
-
 G1_all = get_sorted_zacks("zacks_custom_screen_*Growth1*.csv")
 G2_all = get_sorted_zacks("zacks_custom_screen_*Growth2*.csv")
 DD_all = get_sorted_zacks("zacks_custom_screen_*Defensive*.csv")
@@ -132,8 +125,13 @@ G1_prev = pick_prev(G1_all)
 G2_prev = pick_prev(G2_all)
 DD_prev = pick_prev(DD_all)
 
-g1_raw, g2_raw, dd_raw = safe_read(G1), safe_read(G2), safe_read(DD)
-g1_prev_raw, g2_prev_raw, dd_prev_raw = safe_read(G1_prev), safe_read(G2_prev), safe_read(DD_prev)
+g1_raw = safe_read(G1)
+g2_raw = safe_read(G2)
+dd_raw = safe_read(DD)
+
+g1_prev_raw = safe_read(G1_prev)
+g2_prev_raw = safe_read(G2_prev)
+dd_prev_raw = safe_read(DD_prev)
 
 g1 = normalize(g1_raw)
 g2 = normalize(g2_raw)
@@ -151,13 +149,7 @@ else:
 # =======================
 # INTELLIGENCE ENGINE
 # =======================
-
-def build_intel(pf: pd.DataFrame,
-                g1: pd.DataFrame,
-                g2: pd.DataFrame,
-                dd: pd.DataFrame,
-                cash: float,
-                total: float) -> dict:
+def build_intel(pf, g1, g2, dd, cash, total):
     combined = pd.concat([g1, g2, dd], axis=0, ignore_index=True).drop_duplicates(subset=["Ticker"])
     held = set(pf["Ticker"].astype(str))
     if "Zacks Rank" in combined.columns:
@@ -184,7 +176,7 @@ def build_intel(pf: pd.DataFrame,
     elif cash_pct > 25:
         narrative.append("🟡 Cash elevated – window open to redeploy into high-conviction #1s.")
     else:
-        narrative.append("🟢 Cash within tactical band – normal buy/trim playbook active.")
+        narrative.append("🟢 Cash within tactical band – standard buy/trim playbook active.")
 
     return {
         "combined": combined,
@@ -200,11 +192,7 @@ intel = build_intel(portfolio, g1, g2, dd, cash_value, total_value)
 # ======================
 # ALERT ENGINE (v5.3+)
 # ======================
-
-def detect_alerts(today_df: pd.DataFrame,
-                  prev_df: pd.DataFrame,
-                  label: str):
-    """Compare today vs previous for upgrades/downgrades/new/removals."""
+def detect_alerts(today_df, prev_df, label):
     if today_df.empty or prev_df.empty:
         return (pd.DataFrame(),) * 4
     if "Zacks Rank" not in today_df.columns or "Zacks Rank" not in prev_df.columns:
@@ -212,8 +200,7 @@ def detect_alerts(today_df: pd.DataFrame,
 
     merged = pd.merge(
         prev_df, today_df,
-        on="Ticker",
-        how="outer",
+        on="Ticker", how="outer",
         suffixes=("_prev", "_today"),
         indicator=True
     )
@@ -235,7 +222,6 @@ def detect_alerts(today_df: pd.DataFrame,
 
     return upgrades, downgrades, new, removed
 
-# Run alert detection across screens
 up1, down1, new1, rem1 = detect_alerts(g1, g1_prev, "Growth1")
 up2, down2, new2, rem2 = detect_alerts(g2, g2_prev, "Growth2")
 up3, down3, new3, rem3 = detect_alerts(dd, dd_prev, "Defensive")
@@ -243,22 +229,17 @@ up3, down3, new3, rem3 = detect_alerts(dd, dd_prev, "Defensive")
 up_all = pd.concat([up1, up2, up3], ignore_index=True) if any(
     not x.empty for x in [up1, up2, up3]
 ) else pd.DataFrame()
-
 down_all = pd.concat([down1, down2, down3], ignore_index=True) if any(
     not x.empty for x in [down1, down2, down3]
 ) else pd.DataFrame()
-
 new_all = pd.concat([new1, new2, new3], ignore_index=True) if any(
     not x.empty for x in [new1, new2, new3]
 ) else pd.DataFrame()
-
 rem_all = pd.concat([rem1, rem2, rem3], ignore_index=True) if any(
     not x.empty for x in [rem1, rem2, rem3]
 ) else pd.DataFrame()
 
-# Alert log (optional on-disk history)
 alert_log_path = Path("data/alerts_log.csv")
-
 def log_alerts():
     if all(df.empty for df in [up_all, down_all, new_all, rem_all]):
         return None
@@ -279,7 +260,6 @@ alert_df = log_alerts()
 # =========================
 # ROI TRACKER (v5.x Core)
 # =========================
-
 def log_roi():
     path = Path("data/roi_history.csv")
     now = datetime.datetime.now().strftime("%Y-%m-%d")
@@ -299,11 +279,42 @@ def log_roi():
 roi_df = log_roi()
 
 # ==========================================
-# TACTICAL DECISION MATRIX (v5.4 NEW)
+# TRAILING STOP JOURNAL & CASH RECONCILIATION
 # ==========================================
+def process_trailing_stops(portfolio_df):
+    path = Path("data/trailing_stop_log.csv")
+    # If log exists, load previous
+    if path.exists():
+        log_df = pd.read_csv(path)
+    else:
+        log_df = pd.DataFrame(columns=["Date","Ticker","Action","Change%","Proceeds"])
+    new_entries = []
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for idx, row in portfolio_df.iterrows():
+        if row["Value"] == 0 and row["Ticker"] not in log_df["Ticker"].tolist():
+            # full exit
+            new_entries.append({
+                "Date": now,
+                "Ticker": row["Ticker"],
+                "Action": "EXIT FULL",
+                "Change%": None,
+                "Proceeds": 0  # should be input manually or integrate with broker API
+            })
+        # partial trims logic trigger if needed
+        # custom logic to detect partial – user must flag or manual update
+    if new_entries:
+        new_df = pd.DataFrame(new_entries)
+        combined = pd.concat([log_df, new_df], ignore_index=True)
+        combined.to_csv(path, index=False)
+        return new_df
+    return None
 
-def build_decision_matrix(portfolio: pd.DataFrame,
-                          intel: dict) -> pd.DataFrame:
+new_trailing = process_trailing_stops(portfolio)
+
+# ==========================================
+# TACTICAL DECISION MATRIX (v5.4+)
+# ==========================================
+def build_decision_matrix(pf, intel):
     combined = intel["combined"]
     if combined.empty:
         return pd.DataFrame()
@@ -312,16 +323,16 @@ def build_decision_matrix(portfolio: pd.DataFrame,
     df["Ticker"] = df["Ticker"].astype(str)
     df["Zacks Rank"] = pd.to_numeric(df["Zacks Rank"], errors="coerce")
 
-    pf = portfolio[["Ticker", "GainLoss%", "Value"]].copy()
-    pf["Ticker"] = pf["Ticker"].astype(str)
-    df = df.merge(pf, on="Ticker", how="left")
+    pf2 = pf[["Ticker", "GainLoss%", "Value"]].copy()
+    pf2["Ticker"] = pf2["Ticker"].astype(str)
+    df = df.merge(pf2, on="Ticker", how="left")
 
     df["Held?"] = df["Value"].notna()
 
     def score_row(row):
         rank = row["Zacks Rank"]
         held = row["Held?"]
-        gain = row["GainLoss%"]
+        gain = row.get("GainLoss%", None)
 
         base = 40
         action = "LOW PRIORITY"
@@ -332,7 +343,7 @@ def build_decision_matrix(portfolio: pd.DataFrame,
             action = "BUY candidate"
             bucket = "BUY"
         elif rank == 1 and held:
-            if pd.notna(gain) and gain >= 25:
+            if gain is not None and gain >= 25:
                 base = 80
                 action = "CONSIDER TRIM / REBALANCE"
                 bucket = "TRIM"
@@ -350,7 +361,7 @@ def build_decision_matrix(portfolio: pd.DataFrame,
                 action = "SECONDARY WATCHLIST"
                 bucket = "WATCH"
         else:
-            if held and pd.notna(gain):
+            if held and gain is not None:
                 if gain < -15:
                     base = 55
                     action = "UNDER REVIEW (RISK)"
@@ -369,6 +380,16 @@ def build_decision_matrix(portfolio: pd.DataFrame,
     scored = df.apply(score_row, axis=1)
     df = pd.concat([df, scored], axis=1)
 
+    # Add Suggested Stop % column
+    def suggested_stop(rank):
+        if rank == 1:
+            # candidate whether held or not – use 10% for both Growth1 & Growth2
+            return "10%"
+        # default for others (defensive / higher risk)
+        return "12%"
+
+    df["Suggested Stop %"] = df["Zacks Rank"].apply(suggested_stop)
+
     df = df.sort_values("Score", ascending=False)
     cols = [
         "Ticker",
@@ -377,6 +398,7 @@ def build_decision_matrix(portfolio: pd.DataFrame,
         "GainLoss%",
         "Value",
         "Score",
+        "Suggested Stop %",
         "Tactical Action",
         "Bucket"
     ]
@@ -384,17 +406,14 @@ def build_decision_matrix(portfolio: pd.DataFrame,
 
 decision_matrix = build_decision_matrix(portfolio, intel)
 
-# =====================
+# ==========================================
 # DAILY BRIEF EXPORT
-# =====================
-
+# ==========================================
 def export_brief():
     now = datetime.datetime.now()
     fname = Path(f"data/tactical_brief_{now:%Y-%m-%d}.md")
-
     top_buys = decision_matrix[decision_matrix["Bucket"] == "BUY"].head(5) \
         if not decision_matrix.empty else pd.DataFrame()
-
     with open(fname, "w", encoding="utf-8") as f:
         f.write(f"# Fox Valley Daily Intelligence Brief – {now:%B %d, %Y}\n\n")
         f.write(intel["narrative"])
@@ -412,10 +431,9 @@ now = datetime.datetime.now()
 if now.hour == 6 and 45 <= now.minute < 55:
     export_brief()
 
-# ============================
+# ============================================
 # DASHBOARD – MAIN LAYOUT
-# ============================
-
+# ============================================
 tabs = st.tabs([
     "🚨 Tactical Alert Engine",
     "📂 Data Integrity Report",
@@ -425,6 +443,7 @@ tabs = st.tabs([
     "💰 Defensive Dividend",
     "🧩 Tactical Summary",
     "🎯 Tactical Decision Matrix",
+    "📘 Trailing Stop Journal",
     "📈 ROI Tracker"
 ])
 
@@ -448,12 +467,10 @@ with tabs[0]:
             )
         if not new_all.empty:
             st.markdown("### 🆕 New Entrants")
-            cols = [c for c in new_all.columns if "Ticker" in c or "Rank" in c or c == "Screen"]
-            st.dataframe(new_all[cols], use_container_width=True)
+            st.dataframe(new_all[["Ticker","Screen"]], use_container_width=True)
         if not rem_all.empty:
             st.markdown("### ❌ Removals (No Longer Listed)")
-            cols = [c for c in rem_all.columns if "Ticker" in c or "Rank" in c or c == "Screen"]
-            st.dataframe(rem_all[cols], use_container_width=True)
+            st.dataframe(rem_all[["Ticker","Screen"]], use_container_width=True)
 
 # ---------- DATA INTEGRITY TAB ----------
 with tabs[1]:
@@ -493,7 +510,7 @@ with tabs[2]:
         st.plotly_chart(fig, use_container_width=True)
 
 # ---------- ZACKS HELPER ----------
-def show_zacks(df: pd.DataFrame, label: str):
+def show_zacks(df, label):
     st.subheader(f"Zacks {label} Cross-Match")
     if df.empty:
         st.info(f"No valid Zacks data for {label}.")
@@ -503,6 +520,10 @@ def show_zacks(df: pd.DataFrame, label: str):
         {"both": "✔ Held", "left_only": "🟢 Candidate"}
     )
     merged.drop(columns=["_merge"], inplace=True)
+    merged["Suggested Stop %"] = (
+        ["10%"] * len(merged)
+        if "Growth" in label else ["12%"] * len(merged)
+    )
     st.dataframe(
         merged.style.map(
             lambda v: "background-color:#004d00" if str(v) == "1"
@@ -541,8 +562,18 @@ with tabs[7]:
         )
         st.dataframe(decision_matrix.head(50), use_container_width=True)
 
-# ---------- ROI TRACKER TAB ----------
+# ---------- TRAILING STOP JOURNAL TAB ----------
 with tabs[8]:
+    st.subheader("📘 Trailing Stop Journal – Realized Exits & Proceeds")
+    log_path = Path("data/trailing_stop_log.csv")
+    if log_path.exists():
+        log_df = pd.read_csv(log_path)
+        st.dataframe(log_df.sort_values("Date", ascending=False), use_container_width=True)
+    else:
+        st.info("No trailing stop events recorded yet.")
+
+# ---------- ROI TRACKER TAB ----------
+with tabs[9]:
     st.subheader("📈 ROI vs Zacks 26% Annual Benchmark")
     if roi_df.empty:
         st.info("No ROI history yet.")
