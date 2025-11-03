@@ -1,5 +1,5 @@
 # ============================================
-# FOX VALLEY INTELLIGENCE ENGINE v7.1 – Nov 2025
+# FOX VALLEY INTELLIGENCE ENGINE v7.2 – Nov 2025
 # Dark Tactical Command • Manual Totals • Clean Portfolio
 # ============================================
 
@@ -12,7 +12,7 @@ import re
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v7.1 – Tactical Command",
+    page_title="Fox Valley Intelligence Engine v7.2 – Tactical Command",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -37,7 +37,7 @@ st.markdown(
 # 0) MANUAL OVERRIDES (FROM LIVE ACCOUNT)
 # =========================================================
 MANUAL_TOTAL_VALUE = 163_663.96   # live account value
-MANUAL_CASH_VALUE  = 27_721.60   # cash available to trade
+MANUAL_CASH_VALUE  = 27_721.60    # cash available to trade
 
 # =========================================================
 # 1) LOAD + PATCH PORTFOLIO (REMOVE SOLD, ADD NEW POSITIONS)
@@ -257,14 +257,14 @@ today_all = pd.concat(
      prep_rank_df(g2_today_raw, "Growth 2"),
      prep_rank_df(dd_today_raw, "Defensive Dividend")],
     axis=0, ignore_index=True
-)
+) if (not g1_today_raw.empty or not g2_today_raw.empty or not dd_today_raw.empty) else pd.DataFrame()
 
 prev_all = pd.concat(
     [prep_rank_df(g1_prev_raw, "Growth 1"),
      prep_rank_df(g2_prev_raw, "Growth 2"),
      prep_rank_df(dd_prev_raw, "Defensive Dividend")],
     axis=0, ignore_index=True
-)
+) if (not g1_prev_raw.empty or not g2_prev_raw.empty or not dd_prev_raw.empty) else pd.DataFrame()
 
 def compute_rank_deltas(today_df: pd.DataFrame, prev_df: pd.DataFrame):
     if today_df.empty or prev_df.empty:
@@ -381,9 +381,7 @@ Persistent Rank #1s: {len(persist1)}
 Dropped Rank #1s: {len(drop1)}
 
 New Rank #1 Candidates NOT Held: {len(new_unheld)}
-Held Positions Still Rank #1: {len(held
-
-1)}
+Held Positions Still Rank #1: {len(held_rank1)}
 """
 
     return {
