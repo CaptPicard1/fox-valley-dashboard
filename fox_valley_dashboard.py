@@ -1,18 +1,17 @@
-# =========================================================
-# FOX VALLEY INTELLIGENCE ENGINE v6.3 – Nov 2025
-# Dark Command Build – Post-Trade Integration
-# =========================================================
+# ============================================
+# FOX VALLEY INTELLIGENCE ENGINE v6.4 – Nov 2025
+# Tactical Signal Extension • Rank Delta • AI Allocation Matrix (Dark Mode)
+# ============================================
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from pathlib import Path
-import re
-import datetime
+import datetime, re
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v6.3 – Dark Command Build",
+    page_title="Fox Valley Intelligence Engine v6.4 – Tactical Signal Command",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -24,266 +23,233 @@ st.markdown("""
         [data-testid="stHeader"] {background-color:#0e1117;}
         [data-testid="stSidebar"] {background-color:#111318;}
         table {color:#FAFAFA;}
-        .footer {color:#888;font-size:0.8em;text-align:center;margin-top:40px;}
-        button {border-radius:10px !important;}
+        .rank1 {background-color:#004d00 !important;}
+        .rank2 {background-color:#665c00 !important;}
+        .rank3 {background-color:#663300 !important;}
     </style>
 """, unsafe_allow_html=True)
 
-FOOTER_HTML = (
-    "<div class='footer'>Fox Valley Intelligence Engine v6.3 – Dark Command Build © 2025</div>"
-)
-
-# =========================================================
-# 1️⃣  PORTFOLIO BASELINE – POST-TRADE UPDATE
-# =========================================================
+# ---------- LOAD PORTFOLIO ----------
 @st.cache_data
-def load_portfolio() -> pd.DataFrame:
+def load_portfolio():
     df = pd.read_csv("data/portfolio_data.csv")
-    if "GainLoss%" in df.columns:
-        df["GainLoss%"] = pd.to_numeric(df["GainLoss%"], errors="coerce")
-    if "Value" in df.columns:
-        df["Value"] = pd.to_numeric(df["Value"], errors="coerce")
+    df["GainLoss%"] = pd.to_numeric(df["GainLoss%"], errors="coerce")
+    df["Value"] = pd.to_numeric(df["Value"], errors="coerce")
     return df
 
-pf = load_portfolio().copy()
+portfolio = load_portfolio()
+total_value = portfolio["Value"].sum()
+cash_row = portfolio[portfolio["Ticker"].str.contains("SPAXX", na=False)]
+cash_value = cash_row["Value"].sum()
 
-# remove exited tickers
-for sold in ["MRMD","KE","IPG"]:
-    pf = pf[pf["Ticker"] != sold]
-
-# ensure PRK + NTB holdings exist
-def ensure_position(df,ticker,shares,price):
-    val = shares*price
-    if ticker not in df["Ticker"].astype(str).tolist():
-        add = {"Ticker":ticker,"Shares":shares,"Price":price,"Value":val,"GainLoss%":0}
-        for c in df.columns:
-            if c not in add:
-                add[c]=None
-        df = pd.concat([df,pd.DataFrame([add])],ignore_index=True)
-    return df
-
-pf = ensure_position(pf,"PRK",34,151.00)
-pf = ensure_position(pf,"NTB",110,46.55)
-
-# compute totals
-total_value = 163_663.96
-cash_value  = 37_650.30
-cash_pct    = (cash_value/total_value)*100
-
-# =========================================================
-# 2️⃣  LOAD ZACKS FILES (LATEST + PRIOR)
-# =========================================================
-def _sorted(pattern):
-    files=list(Path("data").glob(pattern))
-    pat=re.compile(r"(\d{4}-\d{2}-\d{2})")
-    dated=[]
+# ---------- AUTO-DETECT LATEST ZACKS FILES ----------
+def get_latest_zacks_file(pattern: str):
+    files = Path("data").glob(pattern)
+    date_pattern = re.compile(r"(\d{4}-\d{2}-\d{2})")
+    dated_files = []
     for f in files:
-        m=pat.search(f.name)
-        if m: dated.append((m.group(1),f))
-    dated.sort()
-    return [p for _,p in dated]
+        match = date_pattern.search(str(f))
+        if match:
+            dated_files.append((match.group(1), f))
+    if dated_files:
+        latest = max(dated_files)[1]
+        return str(latest)
+    return None
 
-def latest_prev(patterns):
-    allp=[]
-    for pat in patterns: allp+=_sorted(pat)
-    allp=sorted(set(allp))
-    if not allp: return None,None
-    return str(allp[-1]),(str(allp[-2]) if len(allp)>1 else None)
+G1_PATH = get_latest_zacks_file("*Growth 1.csv") or get_latest_zacks_file("*Growth1.csv")
+G2_PATH = get_latest_zacks_file("*Growth 2.csv") or get_latest_zacks_file("*Growth2.csv")
+DD_PATH = get_latest_zacks_file("*Defensive Dividends.csv") or get_latest_zacks_file("*DefensiveDividend.csv")
 
-G1_CUR,G1_PREV=latest_prev(["*Growth 1*.csv","*Growth1*.csv"])
-G2_CUR,G2_PREV=latest_prev(["*Growth 2*.csv","*Growth2*.csv"])
-DD_CUR,DD_PREV=latest_prev(["*Defensive*.csv","*Dividend*.csv"])
+def safe_read(path: str | None):
+    if path is None:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path)
+    except Exception:
+        return pd.DataFrame()
 
-def safe_read(path):
-    if not path: return pd.DataFrame()
-    try: return pd.read_csv(path)
-    except: return pd.DataFrame()
+g1_raw, g2_raw, dd_raw = map(safe_read, [G1_PATH, G2_PATH, DD_PATH])
 
-g1_cur,g2_cur,dd_cur=safe_read(G1_CUR),safe_read(G2_CUR),safe_read(DD_CUR)
-g1_prev,g2_prev,dd_prev=safe_read(G1_PREV),safe_read(G2_PREV),safe_read(DD_PREV)
-
-if any(not d.empty for d in [g1_cur,g2_cur,dd_cur]):
-    st.sidebar.success("✅ Zacks files auto-detected from /data")
+if not g1_raw.empty or not g2_raw.empty or not dd_raw.empty:
+    st.sidebar.success("✅ Latest Zacks files auto-detected from /data")
 else:
-    st.sidebar.error("⚠️ No valid Zacks screens found in /data")
+    st.sidebar.error("⚠️ No valid Zacks CSVs found in /data folder.")
 
-# =========================================================
-# 3️⃣  NORMALIZE ZACKS DATA
-# =========================================================
-def normalize(df,group):
-    if df.empty: return pd.DataFrame(columns=["Ticker","Zacks Rank","Group"])
-    df=df.copy()
-    tick=[c for c in df.columns if "ticker" in c.lower() or "symbol" in c.lower()]
-    if tick: df.rename(columns={tick[0]:"Ticker"},inplace=True)
+# ---------- NORMALIZE + CROSSMATCH ----------
+def normalize_zacks(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    tcols = [c for c in df.columns if "ticker" in c.lower() or "symbol" in c.lower()]
+    if tcols: df.rename(columns={tcols[0]:"Ticker"}, inplace=True)
     if "Zacks Rank" not in df.columns:
-        r=[c for c in df.columns if "rank" in c.lower()]
-        if r: df.rename(columns={r[0]:"Zacks Rank"},inplace=True)
+        rcols=[c for c in df.columns if "rank" in c.lower()]
+        if rcols: df.rename(columns={rcols[0]:"Zacks Rank"}, inplace=True)
     keep=[c for c in ["Ticker","Zacks Rank"] if c in df.columns]
-    df=df[keep].copy()
-    df["Group"]=group
-    return df
+    return df[keep].copy()
 
-g1_cur,g2_cur,dd_cur=[normalize(d,g) for d,g in 
-                      [(g1_cur,"Growth 1"),(g2_cur,"Growth 2"),(dd_cur,"Defensive Dividend")]]
-g1_prev,g2_prev,dd_prev=[normalize(d,g) for d,g in 
-                      [(g1_prev,"Growth 1"),(g2_prev,"Growth 2"),(dd_prev,"Defensive Dividend")]]
+def cross_match(zdf: pd.DataFrame, pf: pd.DataFrame) -> pd.DataFrame:
+    if zdf.empty: return pd.DataFrame()
+    pf_tickers = pf[["Ticker"]].astype(str)
+    zdf["Ticker"] = zdf["Ticker"].astype(str)
+    merged = zdf.merge(pf_tickers, on="Ticker", how="left", indicator=True)
+    merged["Held?"] = merged["_merge"].map({"both":"✔ Held","left_only":"🟢 Candidate"})
+    merged.drop(columns=["_merge"], inplace=True)
+    return merged
 
-combined_cur=pd.concat([g1_cur,g2_cur,dd_cur],ignore_index=True).drop_duplicates("Ticker")
-combined_prev=pd.concat([g1_prev,g2_prev,dd_prev],ignore_index=True).drop_duplicates("Ticker")
+g1,g2,dd = map(normalize_zacks,[g1_raw,g2_raw,dd_raw])
 
-for d in [combined_cur,combined_prev]:
-    if "Zacks Rank" in d.columns:
-        d["Zacks Rank"]=pd.to_numeric(d["Zacks Rank"],errors="coerce")
+# ---------- RANK DELTA ENGINE ----------
+def compare_rank_deltas(today_df, prev_df):
+    if today_df.empty or prev_df.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    merged = today_df.merge(prev_df, on="Ticker", how="outer", suffixes=("_Today","_Prev"))
+    new_rank1 = merged[(merged["Zacks Rank_Today"]==1) & (merged["Zacks Rank_Prev"]!=1)]
+    dropped_rank1 = merged[(merged["Zacks Rank_Today"]!=1) & (merged["Zacks Rank_Prev"]==1)]
+    persistent_rank1 = merged[(merged["Zacks Rank_Today"]==1) & (merged["Zacks Rank_Prev"]==1)]
+    return new_rank1,persistent_rank1,dropped_rank1
 
-# =========================================================
-# 4️⃣  DECISION MATRIX + EXECUTION LOGIC
-# =========================================================
-def cross_match(z,port):
-    if z.empty: return z
-    pt=set(port["Ticker"].astype(str))
-    z=z.copy(); z["Held?"]=z["Ticker"].apply(lambda t:"✔ Held" if t in pt else "🟢 Candidate")
-    return z
+# Attempt to load yesterday’s files for delta comparison
+def get_yesterday_file(today_path):
+    if today_path is None: return None
+    m=re.search(r"(\d{4}-\d{2}-\d{2})",today_path)
+    if not m: return None
+    today_date=datetime.datetime.strptime(m.group(1),"%Y-%m-%d")
+    yest=(today_date-datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    candidate=str(today_path).replace(m.group(1),yest)
+    return candidate if Path(candidate).exists() else None
 
-def build_matrix(pf,comb,total,cash):
-    if comb.empty: return pd.DataFrame()
-    dm=cross_match(comb,pf)
-    def stop(g):
-        return "10%" if "Growth 1" in g else ("10%" if "Growth 2" in g else "12%")
-    dm["Suggested Stop %"]=dm["Group"].apply(stop)
-    def action(r):
-        try:
-            r=int(r)
-            return "🟢 BUY" if r==1 else ("⚪ HOLD" if r==2 else "🟠 TRIM")
-        except: return ""
-    dm["Action"]=dm["Zacks Rank"].apply(action)
-    r1=dm[dm["Zacks Rank"]==1]; n=len(r1)
-    deploy=total*0.85
-    per=min(0.15,(deploy/total/n if n else 0))
-    dm["Suggested Allocation %"]=dm["Ticker"].apply(lambda t:per*100 if t in r1["Ticker"].values else 0)
-    dm["Estimated Buy Amount"]=dm["Suggested Allocation %"].apply(
-        lambda p:f"${(p/100)*total:,.2f}" if p else "")
-    return dm
+g1_prev,g2_prev,dd_prev=map(safe_read,[get_yesterday_file(G1_PATH),get_yesterday_file(G2_PATH),get_yesterday_file(DD_PATH)])
 
-decision=build_matrix(pf,combined_cur,total_value,cash_value)
+new1,persist1,drop1=compare_rank_deltas(pd.concat([g1,g2,dd]),pd.concat([g1_prev,g2_prev,dd_prev]))
 
-# =========================================================
-# 5️⃣  RANK DELTAS
-# =========================================================
-def rank_deltas(cur,prev):
-    if cur.empty or prev.empty: return pd.DataFrame(),pd.DataFrame()
-    m=cur.merge(prev[["Ticker","Zacks Rank"]].rename(columns={"Zacks Rank":"Prev"}),on="Ticker",how="outer")
-    new=m[(m["Zacks Rank"]==1)&(m["Prev"]!=1)]
-    drop=m[(m["Prev"]==1)&(m["Zacks Rank"]!=1)]
-    return new,drop
-new1,drop1=rank_deltas(combined_cur,combined_prev)
+# ---------- ALLOCATION ENGINE ----------
+def recommend_allocation(row):
+    rank=str(row.get("Zacks Rank", ""))
+    if rank=="1": return 12.0
+    if rank=="2": return 8.0
+    if rank=="3": return 5.0
+    return 0.0
 
-# =========================================================
-# 6️⃣  INTELLIGENCE BRIEF + EXECUTION PLAN
-# =========================================================
-def brief(dm,total,cash,cashpct):
-    if dm.empty:
-        return f"Value ${total:,.2f}\nCash ${cash:,.2f} ({cashpct:.1f}%)\nNo active signals."
-    b=dm[dm["Action"].str.contains("BUY",na=False)]
-    lines=[f"Portfolio ${total:,.2f}",f"Cash ${cash:,.2f} ({cashpct:.1f}%)",
-           f"BUY {len(b)} | CASH floor 15%"]
-    if cashpct<5: lines.append("⚠️ Cash tight")
-    elif cashpct>25: lines.append("🟡 Cash high – add #1s")
-    else: lines.append("🟢 Cash optimal")
-    if not b.empty:
-        lines.append("Focus : "+", ".join(b["Ticker"]))
-    if not new1.empty: lines.append(f"↑ New #1 entries: {len(new1)}")
-    if not drop1.empty: lines.append(f"↓ Dropped #1 since prior: {len(drop1)}")
-    return "\n".join(lines)
+def suggest_stop(df_name):
+    if "Growth 1" in df_name: return "10%"
+    if "Growth 2" in df_name: return "10%"
+    if "Defensive" in df_name: return "12%"
+    return "10%"
 
-brief_txt=brief(decision,total_value,cash_value,cash_pct)
+# ---------- INTELLIGENCE OVERLAY ----------
+def build_intel(portfolio,g1,g2,dd,new1,persist1,drop1,cash_value,total_value):
+    combined=pd.concat([g1,g2,dd],axis=0,ignore_index=True).drop_duplicates(subset=["Ticker"])
+    held=set(portfolio["Ticker"].astype(str))
+    rank1=combined[combined["Zacks Rank"]==1]
+    new_rank1=rank1[~rank1["Ticker"].isin(held)]
+    held_rank1=rank1[rank1["Ticker"].isin(held)]
+    cash_pct=(cash_value/total_value)*100 if total_value>0 else 0
 
-def exec_plan(dm,total):
-    b=dm[dm["Action"]=="🟢 BUY"].copy()
-    if b.empty: return b
-    order={"Growth 1":1,"Growth 2":2,"Defensive Dividend":3}
-    b["Order"]=b["Group"].map(order).fillna(9)
-    b.sort_values(["Order","Ticker"],inplace=True)
-    b["AllocPct"]=b["Suggested Allocation %"].astype(float)
-    b["Alloc$"]=(b["AllocPct"]/100)*total
-    b["Alloc$Str"]=b["Alloc$"].apply(lambda x:f"${x:,.2f}")
-    b["Seq"]=range(1,len(b)+1)
-    return b[["Seq","Ticker","Group","Zacks Rank","Suggested Stop %","AllocPct","Alloc$Str"]]
+    bias="⚪ Neutral"
+    if len(new_rank1)>len(drop1): bias="🟢 Offensive Bias"
+    elif len(drop1)>len(new_rank1): bias="🟠 Defensive Bias"
 
-exec_df=exec_plan(decision,total_value)
+    narrative=f"""
+Fox Valley Tactical Intelligence – Daily Overlay
+Portfolio: ${total_value:,.2f}
+Cash: ${cash_value:,.2f} ({cash_pct:.1f}%)
+Active Bias: {bias}
 
-# =========================================================
-# 7️⃣  STREAMLIT TABS
-# =========================================================
+New Rank #1s: {len(new1)} | Persistent: {len(persist1)} | Dropped: {len(drop1)}
+New Unheld #1 Candidates: {len(new_rank1)} | Held #1s: {len(held_rank1)}
+"""
+    return {"narrative":narrative,"combined":combined,"new_rank1":new_rank1,"held_rank1":held_rank1,
+            "new1":new1,"persist1":persist1,"drop1":drop1,"bias":bias}
+
+intel=build_intel(portfolio,g1,g2,dd,new1,persist1,drop1,cash_value,total_value)
+
+# ---------- MAIN TABS ----------
 tabs=st.tabs([
- "💼 Portfolio Overview","📊 Growth 1","📊 Growth 2","💰 Defensive Dividend",
- "📈 Decision Matrix","🧩 Tactical Summary","📖 Daily Intelligence Brief"
+    "💼 Portfolio Overview","📊 Growth 1","📊 Growth 2","💰 Defensive Dividend",
+    "🧩 Tactical Summary","📖 Daily Intelligence Brief","⚙️ Tactical Decision Matrix"
 ])
 
-# --- Portfolio
+# --- Portfolio Overview ---
 with tabs[0]:
-    st.subheader("Qualified Plan Holdings – Post-Trade Update")
-    st.dataframe(pf,use_container_width=True)
-    if not pf.empty and "Value" in pf:
-        fig=px.pie(pf,values="Value",names="Ticker",hole=0.3,
-                   title="Portfolio Allocation")
+    st.subheader("Qualified Plan Holdings")
+    st.dataframe(portfolio,use_container_width=True)
+    if not portfolio.empty:
+        fig=px.pie(portfolio,values="Value",names="Ticker",title="Portfolio Allocation",hole=0.3)
         st.plotly_chart(fig,use_container_width=True)
-    st.markdown(FOOTER_HTML,unsafe_allow_html=True)
 
-# --- Zacks Tabs
-for tab,df,label in [(tabs[1],g1_cur,"Growth 1"),
-                     (tabs[2],g2_cur,"Growth 2"),
-                     (tabs[3],dd_cur,"Defensive Dividend")]:
-    with tab:
-        st.subheader(f"Zacks {label} Cross-Match")
-        if not df.empty:
-            cm=cross_match(df,pf)
-            st.dataframe(cm,use_container_width=True)
-        else:
-            st.info(f"No {label} data found.")
-        st.markdown(FOOTER_HTML,unsafe_allow_html=True)
+# --- Growth 1 ---
+with tabs[1]:
+    st.subheader("Zacks Growth 1 Cross-Match")
+    g1m=cross_match(g1,portfolio)
+    if not g1m.empty:
+        g1m["Suggested Stop %"]=suggest_stop("Growth 1")
+        st.dataframe(g1m.style.map(lambda v:"background-color:#004d00" if str(v)=="1" else
+                                  "background-color:#665c00" if str(v)=="2" else
+                                  "background-color:#663300" if str(v)=="3" else "",subset=["Zacks Rank"]),
+                     use_container_width=True)
+    else: st.info("No valid Growth 1 data.")
 
-# --- Decision Matrix
+# --- Growth 2 ---
+with tabs[2]:
+    st.subheader("Zacks Growth 2 Cross-Match")
+    g2m=cross_match(g2,portfolio)
+    if not g2m.empty:
+        g2m["Suggested Stop %"]=suggest_stop("Growth 2")
+        st.dataframe(g2m.style.map(lambda v:"background-color:#004d00" if str(v)=="1" else
+                                  "background-color:#665c00" if str(v)=="2" else
+                                  "background-color:#663300" if str(v)=="3" else "",subset=["Zacks Rank"]),
+                     use_container_width=True)
+    else: st.info("No valid Growth 2 data.")
+
+# --- Defensive Dividend ---
+with tabs[3]:
+    st.subheader("Zacks Defensive Dividend Cross-Match")
+    ddm=cross_match(dd,portfolio)
+    if not ddm.empty:
+        ddm["Suggested Stop %"]=suggest_stop("Defensive Dividend")
+        st.dataframe(ddm.style.map(lambda v:"background-color:#004d00" if str(v)=="1" else
+                                  "background-color:#665c00" if str(v)=="2" else
+                                  "background-color:#663300" if str(v)=="3" else "",subset=["Zacks Rank"]),
+                     use_container_width=True)
+    else: st.info("No valid Defensive Dividend data.")
+
+# --- Tactical Summary ---
 with tabs[4]:
-    st.subheader("📈 Tactical Decision Matrix")
-    if not decision.empty:
-        st.dataframe(decision,use_container_width=True)
-        st.caption("15% max per #1, 15% cash floor.")
-    else: st.info("No signals.")
-    st.markdown(FOOTER_HTML,unsafe_allow_html=True)
-
-# --- Tactical Summary
-with tabs[5]:
     st.subheader("🧩 Weekly Tactical Summary")
-    st.write(f"Value ${total_value:,.2f}  Cash ${cash_value:,.2f}")
-    if not new1.empty:
-        st.markdown("↑ New #1 Entries"); st.dataframe(new1,use_container_width=True)
-    if not drop1.empty:
-        st.markdown("↓ Dropped #1"); st.dataframe(drop1,use_container_width=True)
-    st.markdown(FOOTER_HTML,unsafe_allow_html=True)
+    st.markdown(f"```text\n{intel['narrative']}\n```")
 
-# --- Daily Intelligence Brief
+# --- Daily Intelligence Brief ---
+with tabs[5]:
+    st.subheader("📖 Daily Intelligence Brief – Rank Delta Analysis")
+    st.markdown(f"```text\n{intel['narrative']}\n```")
+    st.markdown("### 🟢 New Zacks Rank #1s vs Yesterday")
+    st.dataframe(intel["new1"],use_container_width=True)
+    st.markdown("### 🟠 Dropped Rank #1s Since Yesterday")
+    st.dataframe(intel["drop1"],use_container_width=True)
+
+# --- Tactical Decision Matrix ---
 with tabs[6]:
-    st.subheader("📖 Daily Intelligence Brief – Command Overview")
-    st.caption(datetime.datetime.now().strftime("%A %B %d %Y – %I:%M %p CST"))
-    st.markdown(f"```text\n{brief_txt}\n```")
-    st.markdown("### 🚀 Execution Protocol")
+    st.subheader("⚙️ Tactical Decision Matrix – AI Allocation Guidance")
+    exec_df=intel["new_rank1"].copy()
     if not exec_df.empty:
+        exec_df["Suggested Stop %"]="10%"
+        exec_df["AllocPct"]=exec_df.apply(recommend_allocation,axis=1)
+        exec_df["Alloc$"]=exec_df["AllocPct"]*total_value/100
         st.dataframe(exec_df,use_container_width=True)
         total_alloc=exec_df["AllocPct"].sum()
-        tot_amt=exec_df["Alloc$"].sum()
+        tot_amt=exec_df["Alloc$"].sum() if "Alloc$" in exec_df.columns else exec_df["AllocPct"].sum()*total_value/100
         st.markdown(f"**Total Allocation → {total_alloc:.1f}% (~${tot_amt:,.0f})**")
-    else: st.info("No BUY signals today.")
-    st.markdown(FOOTER_HTML,unsafe_allow_html=True)
+    else:
+        st.info("No new #1 candidates available for tactical allocation today.")
 
-# --- Optional Auto-Summary Writer
-def write_summary():
+# --- Auto File Export 06:45 ---
+def export_intel():
     now=datetime.datetime.now()
-    f=f"data/tactical_summary_{now:%Y-%m-%d}.md"
-    try:
-        with open(f,"w",encoding="utf-8") as o:
-            o.write("# Fox Valley Tactical Summary\n\n")
-            o.write(brief_txt)
-    except: pass
+    fname=f"data/intel_brief_{now.strftime('%Y-%m-%d')}.md"
+    with open(fname,"w",encoding="utf-8") as f:
+        f.write(intel["narrative"])
+    st.caption(f"Intel brief exported: {fname}")
 
-t=datetime.datetime.now()
-if t.hour==6 and 45<=t.minute<55: write_summary()
+now=datetime.datetime.now()
+if now.hour==6 and 45<=now.minute<55:
+    export_intel()
