@@ -1,6 +1,6 @@
 # ============================================
-# FOX VALLEY INTELLIGENCE ENGINE v7.2 – Nov 2025
-# Dark Tactical Command • Manual Totals • Clean Portfolio
+# FOX VALLEY INTELLIGENCE ENGINE v7.3 – Nov 2025
+# Dark Tactical Command • Manual Totals • Clean Portfolio Fix
 # ============================================
 
 import streamlit as st
@@ -12,7 +12,7 @@ import re
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v7.2 – Tactical Command",
+    page_title="Fox Valley Intelligence Engine v7.3 – Tactical Command",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -46,7 +46,7 @@ MANUAL_CASH_VALUE  = 27_721.60    # cash available to trade
 @st.cache_data
 def load_portfolio():
     df = pd.read_csv("data/portfolio_data.csv")
-    # make sure these are numeric if present
+    # normalize numeric
     if "GainLoss%" in df.columns:
         df["GainLoss%"] = pd.to_numeric(df["GainLoss%"], errors="coerce")
     if "Value" in df.columns:
@@ -64,34 +64,72 @@ else:
     st.error("portfolio_data.csv must contain a 'Ticker' column.")
     st.stop()
 
-def ensure_position(df: pd.DataFrame, ticker: str, shares: float, price: float):
-    """If ticker not present, add it with basic fields."""
+
+def ensure_position(df: pd.DataFrame, ticker: str, shares: float, price: float) -> pd.DataFrame:
+    """
+    Add a position if it's missing, without cloning SPAXX or any other row.
+    Fills key fields from trade info; leaves unrelated fields blank.
+    """
     if ticker in df["Ticker"].astype(str).values:
         return df
 
     value = shares * price
     new_row = {}
-    cols = df.columns.tolist()
 
-    for col in cols:
-        cname = col.lower()
-        if col == "Ticker":
+    for col in df.columns:
+        c = col.lower()
+
+        # identity / symbol
+        if c in ("ticker", "symbol"):
             new_row[col] = ticker
-        elif cname in ("shares", "quantity"):
+
+        # description
+        elif "description" in c:
+            new_row[col] = f"{ticker} (added)"
+
+        # quantity / shares
+        elif c in ("shares", "quantity"):
             new_row[col] = shares
-        elif cname in ("last price", "last_price", "price"):
+
+        # last price
+        elif "last price" in c or c == "price" or "last_price" in c:
             new_row[col] = price
-        elif col == "Value":
+
+        # current value
+        elif c == "value" or "current value" in c:
             new_row[col] = value
-        elif col in ("GainLoss%", "gainloss%", "gainlosspct"):
+
+        # cost basis total
+        elif "cost basis total" in c or ("cost basis" in c and "total" in c):
+            new_row[col] = value
+
+        # average cost basis
+        elif "average cost" in c:
+            new_row[col] = price
+
+        # today's P&L
+        elif "today" in c and "gain" in c and "dollar" in c:
             new_row[col] = 0.0
-        elif col.lower() == "type":
+        elif "today" in c and "gain" in c and "%" in c:
+            new_row[col] = 0.0
+
+        # total P&L
+        elif "total" in c and "gain" in c and "dollar" in c:
+            new_row[col] = 0.0
+        elif "total" in c and "gain" in c and "%" in c:
+            new_row[col] = 0.0
+
+        # type
+        elif c == "type":
             new_row[col] = "Equity"
+
+        # everything else → blank
         else:
-            new_row[col] = df[col].iloc[0] if len(df) > 0 else None
+            new_row[col] = None
 
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     return df
+
 
 # Add new trades if not already in the CSV
 # HSBC: 70 @ 70.41
@@ -101,7 +139,7 @@ portfolio = ensure_position(portfolio, "PRK", 34, 151.00)
 # NTB: 110 @ 46.55
 portfolio = ensure_position(portfolio, "NTB", 110, 46.55)
 
-# Raw values from CSV (still used for pie chart, etc.)
+# raw totals from CSV (still used for pie, sanity check)
 if "Value" not in portfolio.columns:
     st.error("portfolio_data.csv must contain a 'Value' column.")
     st.stop()
@@ -110,7 +148,7 @@ raw_total_value = pd.to_numeric(portfolio["Value"], errors="coerce").sum()
 cash_mask = portfolio["Ticker"].str.contains("SPAXX", case=False, na=False)
 raw_cash_value = pd.to_numeric(portfolio.loc[cash_mask, "Value"], errors="coerce").sum()
 
-# 🔒 Use manual overrides for all tactical logic and metrics
+# 🔒 tactical logic uses your manual, reconciled totals
 total_value = MANUAL_TOTAL_VALUE
 cash_value  = MANUAL_CASH_VALUE
 
@@ -136,16 +174,16 @@ def find_latest_by_keywords(keywords):
             m = date_pattern.search(f.name)
             if not m:
                 continue
-            d = m.group(1)
             try:
-                dt = datetime.datetime.strptime(d, "%Y-%m-%d").date()
+                dt = datetime.datetime.strptime(m.group(1), "%Y-%m-%d").date()
             except Exception:
                 continue
-            if (best_date is None) or (dt > best_date):
+            if best_date is None or dt > best_date:
                 best_date = dt
                 best = f
 
     return str(best) if best is not None else None
+
 
 def safe_read(path):
     if path is None:
@@ -155,7 +193,8 @@ def safe_read(path):
     except Exception:
         return pd.DataFrame()
 
-# Allow both underscore and space naming styles
+
+# allow both underscore and space naming styles
 G1_PATH = find_latest_by_keywords(["zacks", "growth", "1"])
 G2_PATH = find_latest_by_keywords(["zacks", "growth", "2"])
 DD_PATH = find_latest_by_keywords(["zacks", "defensive"])
@@ -177,10 +216,12 @@ def normalize_zacks(df: pd.DataFrame, group_name: str) -> pd.DataFrame:
     if df.empty:
         return df
 
-    cols = [c for c in df.columns if "ticker" in c.lower() or "symbol" in c.lower()]
-    if cols:
-        df = df.rename(columns={cols[0]: "Ticker"})
+    # ticker column
+    ticker_cols = [c for c in df.columns if "ticker" in c.lower() or "symbol" in c.lower()]
+    if ticker_cols:
+        df = df.rename(columns={ticker_cols[0]: "Ticker"})
 
+    # rank column
     if "Zacks Rank" not in df.columns:
         rank_cols = [c for c in df.columns if "rank" in c.lower()]
         if rank_cols:
@@ -197,14 +238,18 @@ def normalize_zacks(df: pd.DataFrame, group_name: str) -> pd.DataFrame:
     out["Group"] = group_name
     return out
 
+
 def cross_match(zdf: pd.DataFrame, pf: pd.DataFrame) -> pd.DataFrame:
     if zdf.empty:
         return pd.DataFrame()
     pf_tickers = pf[["Ticker"]].astype(str)
+    zdf = zdf.copy()
+    zdf["Ticker"] = zdf["Ticker"].astype(str)
     merged = zdf.merge(pf_tickers, on="Ticker", how="left", indicator=True)
     merged["Held?"] = merged["_merge"].map({"both": "✔ Held", "left_only": "🟢 Candidate"})
     merged.drop(columns=["_merge"], inplace=True)
     return merged
+
 
 g1 = normalize_zacks(g1_raw, "Growth 1")
 g2 = normalize_zacks(g2_raw, "Growth 2")
@@ -233,6 +278,7 @@ def find_prev_by_keywords_and_date(keywords, target_date: datetime.date):
             return str(f)
     return None
 
+
 def load_prev_today_pair(keywords):
     latest_path = find_latest_by_keywords(keywords)
     if not latest_path:
@@ -245,26 +291,35 @@ def load_prev_today_pair(keywords):
     prev_path = find_prev_by_keywords_and_date(keywords, prev_date)
     return safe_read(latest_path), safe_read(prev_path)
 
+
 def prep_rank_df(df, group_name: str):
     return normalize_zacks(df, group_name)
+
 
 g1_today_raw, g1_prev_raw = load_prev_today_pair(["zacks", "growth", "1"])
 g2_today_raw, g2_prev_raw = load_prev_today_pair(["zacks", "growth", "2"])
 dd_today_raw, dd_prev_raw = load_prev_today_pair(["zacks", "defensive"])
 
 today_all = pd.concat(
-    [prep_rank_df(g1_today_raw, "Growth 1"),
-     prep_rank_df(g2_today_raw, "Growth 2"),
-     prep_rank_df(dd_today_raw, "Defensive Dividend")],
-    axis=0, ignore_index=True
+    [
+        prep_rank_df(g1_today_raw, "Growth 1"),
+        prep_rank_df(g2_today_raw, "Growth 2"),
+        prep_rank_df(dd_today_raw, "Defensive Dividend"),
+    ],
+    axis=0,
+    ignore_index=True,
 ) if (not g1_today_raw.empty or not g2_today_raw.empty or not dd_today_raw.empty) else pd.DataFrame()
 
 prev_all = pd.concat(
-    [prep_rank_df(g1_prev_raw, "Growth 1"),
-     prep_rank_df(g2_prev_raw, "Growth 2"),
-     prep_rank_df(dd_prev_raw, "Defensive Dividend")],
-    axis=0, ignore_index=True
-) if (not g1_prev_raw.empty or not g2_prev_raw.empty or not dd_prev_raw.empty) else pd.DataFrame()
+    [
+        prep_rank_df(g1_prev_raw, "Growth 1"),
+        prep_rank_df(g2_prev_raw, "Growth 2"),
+        prep_rank_df(dd_prev_raw, "Defensive Dividend"),
+    ],
+    axis=0,
+    ignore_index=True,
+) if (not g2_prev_raw.empty or not g1_prev_raw.empty or not dd_prev_raw.empty) else pd.DataFrame()
+
 
 def compute_rank_deltas(today_df: pd.DataFrame, prev_df: pd.DataFrame):
     if today_df.empty or prev_df.empty:
@@ -288,6 +343,7 @@ def compute_rank_deltas(today_df: pd.DataFrame, prev_df: pd.DataFrame):
     except Exception:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
+
 new1, persist1, drop1 = compute_rank_deltas(today_all, prev_all)
 
 # =========================================================
@@ -303,15 +359,18 @@ def suggest_stop_for_group(group: str) -> str:
         return "12%"
     return "10%"
 
-def build_allocation_for_new_rank1(combined: pd.DataFrame,
-                                   portfolio_df: pd.DataFrame,
-                                   total_value: float,
-                                   cash_value: float) -> pd.DataFrame:
+
+def build_allocation_for_new_rank1(
+    combined: pd.DataFrame,
+    portfolio_df: pd.DataFrame,
+    total_value: float,
+    cash_value: float,
+) -> pd.DataFrame:
     if combined.empty:
         return pd.DataFrame()
 
     held = set(portfolio_df["Ticker"].astype(str))
-    candidates = combined[(combined["Zacks Rank"] == 1)].copy()
+    candidates = combined[combined["Zacks Rank"] == 1].copy()
     candidates = candidates[~candidates["Ticker"].isin(held)].copy()
 
     if candidates.empty:
@@ -335,7 +394,8 @@ def build_allocation_for_new_rank1(combined: pd.DataFrame,
         candidates["AI Action"] = "HOLD – No deployable cash"
         return candidates
 
-    max_pos_value = 0.15 * total_value  # single-position cap
+    # single position cap 15% of total portfolio
+    max_pos_value = 0.15 * total_value
     per_dollars = min(deployable / n, max_pos_value)
     per_pct = per_dollars / total_value * 100 if total_value > 0 else 0.0
 
@@ -346,14 +406,18 @@ def build_allocation_for_new_rank1(combined: pd.DataFrame,
 
     return candidates
 
-def build_intel_overlay(portfolio_df: pd.DataFrame,
-                        combined_df: pd.DataFrame,
-                        new1: pd.DataFrame,
-                        persist1: pd.DataFrame,
-                        drop1: pd.DataFrame,
-                        cash_value: float,
-                        total_value: float) -> dict:
+
+def build_intel_overlay(
+    portfolio_df: pd.DataFrame,
+    combined_df: pd.DataFrame,
+    new1: pd.DataFrame,
+    persist1: pd.DataFrame,
+    drop1: pd.DataFrame,
+    cash_value: float,
+    total_value: float,
+) -> dict:
     held = set(portfolio_df["Ticker"].astype(str))
+
     if not combined_df.empty and "Zacks Rank" in combined_df.columns:
         rank1 = combined_df[combined_df["Zacks Rank"] == 1]
     else:
@@ -362,7 +426,7 @@ def build_intel_overlay(portfolio_df: pd.DataFrame,
     new_unheld = rank1[~rank1["Ticker"].isin(held)] if not rank1.empty else pd.DataFrame()
     held_rank1 = rank1[rank1["Ticker"].isin(held)] if not rank1.empty else pd.DataFrame()
 
-    cash_pct = (cash_value / total_value) * 100 if total_value > 0 else 0
+    cash_pct = (cash_value / total_value) * 100 if total_value > 0 else 0.0
 
     bias = "⚪ Neutral"
     if len(new_unheld) > len(drop1):
@@ -370,19 +434,17 @@ def build_intel_overlay(portfolio_df: pd.DataFrame,
     elif len(drop1) > len(new_unheld):
         bias = "🟠 Defensive Bias"
 
-    narrative = f"""
-Fox Valley Tactical Intelligence – Daily Overlay
-Portfolio: ${total_value:,.2f}
-Cash: ${cash_value:,.2f} ({cash_pct:.1f}%)
-Active Bias: {bias}
-
-New Rank #1s vs yesterday: {len(new1)}
-Persistent Rank #1s: {len(persist1)}
-Dropped Rank #1s: {len(drop1)}
-
-New Rank #1 Candidates NOT Held: {len(new_unheld)}
-Held Positions Still Rank #1: {len(held_rank1)}
-"""
+    narrative = (
+        "Fox Valley Tactical Intelligence – Daily Overlay\n"
+        f"Portfolio: ${total_value:,.2f}\n"
+        f"Cash: ${cash_value:,.2f} ({cash_pct:.1f}%)\n"
+        f"Active Bias: {bias}\n\n"
+        f"New Rank #1s vs yesterday: {len(new1)}\n"
+        f"Persistent Rank #1s: {len(persist1)}\n"
+        f"Dropped Rank #1s: {len(drop1)}\n\n"
+        f"New Rank #1 Candidates NOT Held: {len(new_unheld)}\n"
+        f"Held Positions Still Rank #1: {len(held_rank1)}"
+    )
 
     return {
         "narrative": narrative.strip(),
@@ -393,6 +455,7 @@ Held Positions Still Rank #1: {len(held_rank1)}
         "drop1": drop1,
         "bias": bias,
     }
+
 
 allocation_df = build_allocation_for_new_rank1(
     combined_zacks, portfolio, total_value, cash_value
@@ -546,6 +609,7 @@ def export_intel_brief():
         st.caption(f"Intel brief exported → {fname}")
     except Exception as e:
         st.error(f"Failed to export intel brief: {e}")
+
 
 now = datetime.datetime.now()
 if now.hour == 6 and 45 <= now.minute < 55:
