@@ -41,25 +41,23 @@ def load_portfolio():
         st.error(f"❌ Portfolio file not found: {data_path}")
         st.stop()
 
-    # 🧭 Fidelity CSVs have several header lines before real data
-    # Try skipping 10 first; if that fails, skip 11
-    df = pd.read_csv(data_path, skiprows=10)
-    # If we still don't see any plausible data columns, try 11
-    if not any(col.strip().lower() in ["symbol", "security symbol", "quantity"] for col in df.columns):
-        df = pd.read_csv(data_path, skiprows=11)
+    # Read Fidelity file as-is (header row is correct)
+    df = pd.read_csv(data_path)
 
     # Clean column names
     df.columns = [c.strip() for c in df.columns]
 
-    # 🧩 Detect any likely ticker column and rename it to Ticker
-    possible_tickers = ["Symbol", "Security Symbol", "Fund Symbol", "Product Symbol"]
-    for col in possible_tickers:
-        if col in df.columns:
-            df.rename(columns={col: "Ticker"}, inplace=True)
-            break
+    # Keep only true position rows (drop disclaimer/footer lines)
+    if "Symbol" in df.columns:
+        df = df[df["Symbol"].notna()].copy()
+    else:
+        st.error("❌ Expected 'Symbol' column not found in Fidelity file.")
+        st.write("Columns detected:", list(df.columns))
+        st.stop()
 
-    # Rename other Fidelity headers to internal names
+    # Rename columns to internal names
     df.rename(columns={
+        "Symbol": "Ticker",
         "Quantity": "Shares",
         "Last Price": "MarketPrice",
         "Cost Basis Total": "CostBasis",
@@ -88,7 +86,7 @@ def load_portfolio():
         df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
         df["Ticker"] = df["Ticker"].str.replace(r"[^A-Z]", "", regex=True)
     else:
-        st.error("❌ No ticker column detected after cleaning. Check the Fidelity export format.")
+        st.error("❌ No 'Ticker' column detected after renaming from 'Symbol'.")
         st.write("Columns detected:", list(df.columns))
         st.stop()
 
@@ -162,12 +160,17 @@ def build_intel(pf, g1, g2, dd):
         ]
         return {"narrative": "\n".join(msg), "new": pd.DataFrame(), "held": pd.DataFrame()}
 
-    combined = pd.concat([g1, g2, dd], ignore_index=True).drop_duplicates(subset=["Ticker"]) if not (g1.empty and g2.empty and dd.empty) else pd.DataFrame()
+    if not (g1.empty and g2.empty and dd.empty):
+        combined = pd.concat([g1, g2, dd], ignore_index=True).drop_duplicates(subset=["Ticker"])
+    else:
+        combined = pd.DataFrame(columns=["Ticker", "Zacks Rank"])
+
     held = set(pf["Ticker"])
+
     if not combined.empty and "Zacks Rank" in combined.columns:
         rank1 = combined[combined["Zacks Rank"] == 1]
     else:
-        rank1 = pd.DataFrame()
+        rank1 = pd.DataFrame(columns=["Ticker", "Zacks Rank"])
 
     new1 = rank1[~rank1["Ticker"].isin(held)] if not rank1.empty else pd.DataFrame()
     held1 = rank1[rank1["Ticker"].isin(held)] if not rank1.empty else pd.DataFrame()
@@ -194,8 +197,13 @@ with tabs[0]:
     st.metric("Total Portfolio Value", f"${total_value:,.2f}")
     st.dataframe(portfolio, use_container_width=True)
     if not portfolio.empty and "MarketValue" in portfolio.columns and "Ticker" in portfolio.columns:
-        fig = px.pie(portfolio, values="MarketValue", names="Ticker", hole=0.3,
-                     title="Portfolio Allocation")
+        fig = px.pie(
+            portfolio,
+            values="MarketValue",
+            names="Ticker",
+            hole=0.3,
+            title="Portfolio Allocation"
+        )
         st.plotly_chart(fig, use_container_width=True)
 
 # --- Growth 1 ---
