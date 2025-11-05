@@ -4,10 +4,11 @@ import streamlit as st
 
 # 1️⃣ Load portfolio safely
 try:
-    portfolio = pd.read_csv("data/Portfolio_Positions_Nov-05-2025.csv")
+    portfolio = pd.read_csv("Portfolio_Positions_Nov-05-2025.csv")
 except Exception as e:
-    st.error(f"❌ Unable to load portfolio_data.csv: {e}")
+    st.error(f"❌ Unable to load Portfolio_Positions_Nov-05-2025.csv: {e}")
     st.stop()
+
 
 # 2️⃣ Clean column names (strip spaces)
 portfolio.columns = [c.strip() for c in portfolio.columns]
