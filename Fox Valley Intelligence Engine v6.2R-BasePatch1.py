@@ -1,5 +1,5 @@
 # ============================================
-# FOX VALLEY INTELLIGENCE ENGINE v6.2R - FINAL STABLE BUILD
+# FOX VALLEY INTELLIGENCE ENGINE v6.2R - FINAL STABLE BUILD (Header Fix)
 # Clean rebuild for Streamlit Cloud (Nov 05, 2025)
 # ============================================
 
@@ -41,7 +41,11 @@ def load_portfolio():
         st.error(f"❌ Portfolio file not found: {data_path}")
         st.stop()
 
-    df = pd.read_csv(data_path)
+    # 🧭 Skip Fidelity’s non-data header lines (fix)
+    df = pd.read_csv(data_path, skiprows=10)
+    if "Symbol" not in df.columns:
+        df = pd.read_csv(data_path, skiprows=11)
+
     df.columns = [c.strip() for c in df.columns]
 
     df.rename(columns={
