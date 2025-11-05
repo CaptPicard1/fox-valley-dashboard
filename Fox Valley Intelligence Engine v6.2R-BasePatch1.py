@@ -1,19 +1,26 @@
 # ---------- PORTFOLIO LOAD + NORMALIZATION ----------
+import os
 import pandas as pd
 import streamlit as st
 
-# 1️⃣ Load portfolio safely
+st.set_page_config(page_title="Fox Valley Intelligence Engine v6.2R", layout="wide")
+
+# Automatically locate the data folder no matter where Streamlit runs
+data_path = os.path.join(os.path.dirname(__file__), "data", "Portfolio_Positions_Nov-05-2025.csv")
+
+st.write(f"📂 Attempting to load: {data_path}")
+
 try:
-    portfolio = pd.read_csv("Portfolio_Positions_Nov-05-2025.csv")
+    portfolio = pd.read_csv(data_path)
+    st.success("✅ Portfolio loaded successfully!")
 except Exception as e:
     st.error(f"❌ Unable to load Portfolio_Positions_Nov-05-2025.csv: {e}")
     st.stop()
 
-
-# 2️⃣ Clean column names (strip spaces)
+# --- Clean column names ---
 portfolio.columns = [c.strip() for c in portfolio.columns]
 
-# 3️⃣ Rename Fidelity column headers to match what the app expects
+# --- Rename Fidelity headers ---
 portfolio.rename(columns={
     "Symbol": "Ticker",
     "Quantity": "Shares",
@@ -23,33 +30,7 @@ portfolio.rename(columns={
     "Total Gain/Loss Dollar": "GainLoss$",
     "Total Gain/Loss Percent": "GainLoss%"
 }, inplace=True)
+Commit changes
+v6.2R-FidelitySync-Stable Patch 18 — Absolute data folder path verified for Streamlit Cloud
 
-# 4️⃣ Normalize tickers
-if "Ticker" in portfolio.columns:
-    portfolio["Ticker"] = portfolio["Ticker"].astype(str).str.strip().str.upper()
-    # Remove special characters like **, .PK, etc.
-    portfolio["Ticker"] = portfolio["Ticker"].str.replace(r"[^A-Z]", "", regex=True)
-else:
-    st.warning("⚠️ 'Ticker' column not found in portfolio_data.csv")
 
-# 5️⃣ Clean numeric fields (strip $, commas, %, +, etc.)
-money_cols = ["MarketPrice", "CostBasis", "MarketValue", "GainLoss$", "GainLoss%"]
-for col in money_cols:
-    if col in portfolio.columns:
-        portfolio[col] = (
-            portfolio[col]
-            .astype(str)
-            .str.replace('[\$,()%+]', '', regex=True)
-            .str.strip()
-        )
-        portfolio[col] = pd.to_numeric(portfolio[col], errors="coerce")
-
-# 6️⃣ Ensure Shares is numeric
-if "Shares" in portfolio.columns:
-    portfolio["Shares"] = pd.to_numeric(portfolio["Shares"], errors="coerce")
-
-# 7️⃣ If MarketValue missing but Shares & MarketPrice exist, compute it
-if "MarketValue" not in portfolio.columns and all(
-    c in portfolio.columns for c in ["Shares", "MarketPrice"]
-):
-    portfolio["MarketValue"] = portfolio["Shares"] * portfolio["MarketPrice"]
