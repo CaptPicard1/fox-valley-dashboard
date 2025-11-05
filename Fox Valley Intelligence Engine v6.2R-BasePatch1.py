@@ -11,6 +11,7 @@ except Exception as e:
 
 # 2️⃣ Rename Fidelity column headers to match what the app expects
 portfolio.rename(columns={
+    "Symbol": "Ticker",
     "Quantity": "Shares",
     "Last Price": "MarketPrice",
     "Cost Basis Total": "CostBasis",
@@ -29,8 +30,11 @@ else:
 # 4️⃣ Compute gain/loss only if required columns exist
 if all(col in portfolio.columns for col in ["CostBasis", "MarketPrice", "Shares"]):
     portfolio["Shares"] = pd.to_numeric(portfolio["Shares"], errors="coerce")
+    # Clean currency fields ($) and commas before converting
+    portfolio["MarketPrice"] = portfolio["MarketPrice"].replace('[\$,]', '', regex=True).astype(float)
+    portfolio["CostBasis"] = portfolio["CostBasis"].replace('[\$,]', '', regex=True).astype(float)
     portfolio["MarketValue"] = portfolio["Shares"] * portfolio["MarketPrice"]
-    portfolio["GainLoss$"] = (portfolio["MarketPrice"] - portfolio["CostBasis"]) * portfolio["Shares"]
-    portfolio["GainLoss%"] = ((portfolio["MarketPrice"] / portfolio["CostBasis"]) - 1) * 100
+    portfolio["GainLoss$"] = (portfolio["MarketPrice"] - portfolio["CostBasis"] / portfolio["Shares"]) * portfolio["Shares"]
+    portfolio["GainLoss%"] = ((portfolio["MarketPrice"] / (portfolio["CostBasis"] / portfolio["Shares"])) - 1) * 100
 else:
     st.warning("⚠️ Missing one of: CostBasis, MarketPrice, or Shares columns.")
