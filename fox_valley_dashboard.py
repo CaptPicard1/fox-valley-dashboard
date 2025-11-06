@@ -1,5 +1,5 @@
 # ============================================
-# FOX VALLEY INTELLIGENCE ENGINE v6.3R – COMMAND DECK (Operational Build)
+# 🧭 FOX VALLEY INTELLIGENCE ENGINE v6.3R – COMMAND DECK (Final Integrated Build)
 # ============================================
 
 import streamlit as st
@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import datetime
 
-# --- ONE-TIME CACHE CLEAR TO REMOVE OLD DATA ---
+# --- CLEAR CACHE AT LAUNCH (one-time)
 st.cache_data.clear()
 st.cache_resource.clear()
 
@@ -33,37 +33,41 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- PORTFOLIO (DAILY SNAPSHOT SUPPORT READY) ----------
+# ===============================================================
+#  AUTO-DETECT PORTFOLIO (supports all date and month formats)
+# ===============================================================
 def get_latest_portfolio():
     """
-    Auto-detect the latest Portfolio_Positions_YYYY-MM-DD.csv file in /data.
-    Falls back to portfolio_data.csv if no dated file exists.
+    Detect the most recent portfolio CSV in /data using flexible matching.
+    Accepts any filename beginning with 'Portfolio' (e.g. Nov, November, YYYY-MM-DD).
     """
-    files = Path("data").glob("Portfolio_Positions_*.csv")
-    date_pattern = re.compile(r"(\d{4}-\d{2}-\d{2})")
-    dated = []
-    for f in files:
-        m = date_pattern.search(str(f))
-        if m:
-            dated.append((m.group(1), f))
-    if dated:
-        return str(max(dated)[1])
-    # Fallback legacy name
-    fallback = Path("data") / "portfolio_data.csv"
-    return str(fallback) if fallback.exists() else None
+    data_path = Path("data")
+    if not data_path.exists():
+        st.error("⚠️ /data directory not found.")
+        return None
+
+    files = list(data_path.glob("Portfolio*.csv"))
+    if not files:
+        st.warning("⚠️ No portfolio files detected in /data.")
+        return None
+
+    # Sort by last modified date (most recent first)
+    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    latest = files[0]
+    st.sidebar.info(f"📁 Auto-detected portfolio file: {latest.name}")
+    return str(latest)
 
 @st.cache_data
 def load_portfolio():
     latest_path = get_latest_portfolio()
     if not latest_path:
-        st.error("⚠️ No portfolio file found in /data (expected Portfolio_Positions_YYYY-MM-DD.csv or portfolio_data.csv).")
+        st.error("⚠️ No portfolio file found.")
         return pd.DataFrame()
 
-    st.sidebar.info(f"📁 Loading portfolio file: {Path(latest_path).name}")
     try:
         df = pd.read_csv(latest_path)
-    except FileNotFoundError:
-        st.error(f"⚠️ Portfolio file not found: {latest_path}")
+    except Exception as e:
+        st.error(f"⚠️ Failed to load {latest_path}: {e}")
         return pd.DataFrame()
 
     for col in ["GainLoss%", "Value"]:
@@ -73,11 +77,9 @@ def load_portfolio():
 
 portfolio = load_portfolio()
 
-# ---------- PORTFOLIO TOTALS (DYNAMIC) ----------
+# ---------- CALCULATE TOTALS ----------
 if not portfolio.empty:
-    cash_mask = portfolio["Ticker"].astype(str).str.contains(
-        "CASH|MONEY|MMKT|USD", case=False, na=False
-    )
+    cash_mask = portfolio["Ticker"].astype(str).str.contains("CASH|MONEY|MMKT|USD", case=False, na=False)
     cash_value = float(portfolio.loc[cash_mask, "Value"].sum())
     total_value = float(portfolio["Value"].sum())
     if cash_value == 0 and "Cash" in portfolio.columns:
@@ -87,7 +89,9 @@ else:
 
 st.sidebar.info(f"💰 Portfolio Loaded — Total ${total_value:,.2f} | Cash ${cash_value:,.2f}")
 
-# ---------- AUTO-DETECT ZACKS FILES ----------
+# ===============================================================
+#  AUTO-DETECT ZACKS FILES
+# ===============================================================
 def get_latest(pattern):
     files = Path("data").glob(pattern)
     date_pattern = re.compile(r"(\d{4}-\d{2}-\d{2})")
@@ -98,9 +102,10 @@ def get_latest(pattern):
             dated.append((m.group(1), f))
     return str(max(dated)[1]) if dated else None
 
-G1_PATH = get_latest("zacks_custom_screen_*Growth 1*.csv") or get_latest("zacks_custom_screen_*Growth1*.csv")
-G2_PATH = get_latest("zacks_custom_screen_*Growth 2*.csv") or get_latest("zacks_custom_screen_*Growth2*.csv")
-DD_PATH = get_latest("zacks_custom_screen_*Defensive Dividends*.csv") or get_latest("zacks_custom_screen_*Defensive*.csv")
+# Accepts both underscored and spaced filenames
+G1_PATH = get_latest("zacks_custom_screen_*Growth1*.csv") or get_latest("zacks_custom_screen_*Growth 1*.csv")
+G2_PATH = get_latest("zacks_custom_screen_*Growth2*.csv") or get_latest("zacks_custom_screen_*Growth 2*.csv")
+DD_PATH = get_latest("zacks_custom_screen_*Defensive*.csv") or get_latest("zacks_custom_screen_*Defensive Dividends*.csv")
 
 def safe_read(p):
     if not p:
@@ -119,7 +124,9 @@ if not g1.empty or not g2.empty or not dd.empty:
 else:
     st.sidebar.error("⚠️ No Zacks CSVs found in /data.")
 
-# ---------- NORMALIZE + MATCH ----------
+# ===============================================================
+#  NORMALIZE AND CROSS-MATCH
+# ===============================================================
 def normalize(df):
     if df.empty:
         return df
@@ -145,7 +152,9 @@ def cross_match(zdf, pf):
 
 g1, g2, dd = normalize(g1), normalize(g2), normalize(dd)
 
-# ---------- BUILD INTELLIGENCE OVERLAY ----------
+# ===============================================================
+#  BUILD INTELLIGENCE OVERLAY
+# ===============================================================
 def build_intel(pf, g1, g2, dd, cash_val, total_val):
     combined = pd.concat([g1, g2, dd], ignore_index=True).drop_duplicates(subset=["Ticker"])
     held = set(pf["Ticker"].astype(str)) if not pf.empty else set()
@@ -165,7 +174,9 @@ def build_intel(pf, g1, g2, dd, cash_val, total_val):
 
 intel = build_intel(portfolio, g1, g2, dd, cash_value, total_value)
 
-# ---------- MAIN TABS ----------
+# ===============================================================
+#  MAIN INTERFACE — 7 TABS
+# ===============================================================
 tabs = st.tabs([
     "💼 Portfolio Overview",
     "📊 Growth 1",
