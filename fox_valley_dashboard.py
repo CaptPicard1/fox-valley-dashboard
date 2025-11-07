@@ -1,225 +1,140 @@
-# ==============================================================
-# 🧭 Fox Valley Intelligence Engine v7.0R-2 – Enterprise Command Deck (Nov 08, 2025)
-# ==============================================================
-# Author: #1  |  Commander: CaptPicard1
-# Mission: Fault-tolerant tactical investment console for Fox Valley Dashboard
-# Architecture: Auto-detects newest portfolio & Zacks screens, self-repairs malformed data,
-#                never crashes, always operational.
-# ==============================================================
+# ============================================
+# 🧭 Fox Valley Intelligence Engine v6.3R-Restoration Build
+# Stable Build – November 7, 2025
+# ============================================
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 from pathlib import Path
-import datetime
 import re
-import shutil
-import os
+import datetime
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v7.0R-2 – Enterprise Command Deck",
+    page_title="Fox Valley Intelligence Engine v6.3R – Restoration Build",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ---------- STYLE ----------
+# ---------- DARK MODE ----------
 st.markdown("""
 <style>
-    body {background-color:#0e1117;color:#FAFAFA;}
-    [data-testid="stHeader"] {background-color:#0e1117;}
-    [data-testid="stSidebar"] {background-color:#111318;}
-    table {color:#FAFAFA;}
-    .rank1 {background-color:#004d00 !important;}
-    .rank2 {background-color:#665c00 !important;}
-    .rank3 {background-color:#663300 !important;}
+body {background-color:#0e1117;color:#fafafa;}
+[data-testid="stHeader"] {background-color:#0e1117;}
+[data-testid="stSidebar"] {background-color:#111318;}
+table {color:#fafafa;}
+.rank1 {background-color:#004d00!important;}
+.rank2 {background-color:#665c00!important;}
+.rank3 {background-color:#663300!important;}
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- DIRECTORIES ----------
-DATA_DIR = Path("data")
-ARCHIVE_DIR = Path("archive")
-ARCHIVE_DIR.mkdir(exist_ok=True)
+# ---------- PORTFOLIO ----------
+def load_portfolio():
+    files = sorted(Path("data").glob("Portfolio_Positions_*.csv"), key=lambda f: f.stat().st_mtime)
+    if not files:
+        st.error("⚠️ No portfolio files found in /data.")
+        return pd.DataFrame(), 0.0, 0.0
 
-# ==============================================================
-#  FILE MANAGEMENT: AUTO-ARCHIVE & LATEST DETECTION
-# ==============================================================
+    latest = str(files[-1])
+    with open(latest, "r", errors="ignore") as f:
+        lines = f.readlines()
+    header_line = next((i for i, l in enumerate(lines) if "Symbol" in l), 0)
 
-def get_latest(pattern: str):
-    """Return newest file matching pattern inside /data and archive older ones."""
-    files = list(DATA_DIR.glob(pattern))
+    df = pd.read_csv(latest, skiprows=header_line)
+    if "Symbol" not in df.columns:
+        st.error("⚠️ No 'Symbol' column detected in portfolio file.")
+        return pd.DataFrame(), 0.0, 0.0
+
+    # numeric conversions
+    for c in df.columns:
+        if df[c].dtype == object:
+            df[c] = df[c].replace('[\$,]', '', regex=True)
+        try:
+            df[c] = pd.to_numeric(df[c])
+        except Exception:
+            pass
+
+    val_cols = [c for c in df.columns if "Value" in c or "Total" in c]
+    total_value = df[val_cols[0]].sum() if val_cols else 0.0
+    cash_rows = df["Symbol"].astype(str).str.contains("CASH|MMKT|MONEY|USD", case=False, na=False)
+    cash_value = df.loc[cash_rows, val_cols[0]].sum() if val_cols else 0.0
+
+    st.sidebar.info(f"📁 Active Portfolio File: {Path(latest).name}")
+    return df, float(total_value), float(cash_value)
+
+portfolio, total_value, cash_value = load_portfolio()
+
+# ---------- AUTO-DETECT ZACKS FILES ----------
+def get_latest(pattern):
+    files = list(Path("data").glob(pattern))
     if not files:
         return None
-    date_pattern = re.compile(r"(\d{4}-\d{2}-\d{2})")
-    dated = []
-    for f in files:
-        m = date_pattern.search(str(f))
-        if m:
-            dated.append((m.group(1), f))
-    latest = max(dated, key=lambda x: x[0])[1] if dated else max(files, key=lambda x: x.stat().st_mtime)
-    # Move older files safely
-    for f in files:
-        if f != latest:
-            try:
-                shutil.move(str(f), ARCHIVE_DIR / f.name)
-            except Exception:
-                pass
-    return latest
-
-# ==============================================================
-#  PORTFOLIO LOADER
-# ==============================================================
-
-@st.cache_data
-def load_portfolio():
-    latest = get_latest("Portfolio_Positions_*.csv")
-    if not latest:
-        st.sidebar.error("⚠️ No portfolio files found in /data.")
-        return pd.DataFrame(), "None", 0.0, 0.0
-
-    st.sidebar.info(f"📁 Active Portfolio File: {latest.name}")
-
-    try:
-        df = pd.read_csv(latest)
-    except Exception as e:
-        st.sidebar.error(f"❌ Could not read {latest.name}: {e}")
-        return pd.DataFrame(), latest.name, 0.0, 0.0
-
-    # Normalize headers
-    df.columns = [c.strip() for c in df.columns]
-    rename_map = {}
-    for c in df.columns:
-        cl = c.lower()
-        if "symbol" in cl or "ticker" in cl:
-            rename_map[c] = "Ticker"
-        elif "value" in cl and "total" in cl:
-            rename_map[c] = "Value"
-        elif "gain" in cl and "%" in cl:
-            rename_map[c] = "GainLoss%"
-    df.rename(columns=rename_map, inplace=True)
-
-    # Ensure required columns exist
-    for col in ["Ticker", "Value"]:
-        if col not in df.columns:
-            df[col] = None
-
-    # Convert numerics
-    for col in ["GainLoss%", "Value"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
-
-    total_value = df["Value"].sum()
-    cash_rows = df[df["Ticker"].astype(str).str.contains("CASH|USD|MMKT|MONEY", case=False, na=False)]
-    cash_value = cash_rows["Value"].sum() if not cash_rows.empty else 0.0
-
-    return df, latest.name, total_value, cash_value
-
-portfolio, portfolio_file, total_value, cash_value = load_portfolio()
-
-# ==============================================================
-#  ZACKS SCREEN LOADERS
-# ==============================================================
+    return str(sorted(files, key=lambda f: f.stat().st_mtime)[-1])
 
 def safe_read(path):
-    if not path or not Path(path).exists():
-        return pd.DataFrame()
-    try:
-        return pd.read_csv(path)
-    except Exception:
-        return pd.DataFrame()
+    if not path: return pd.DataFrame()
+    try: return pd.read_csv(path)
+    except Exception: return pd.DataFrame()
 
-def normalize_zacks(df):
-    if df.empty:
-        return df
-    df = df.loc[:, ~df.columns.duplicated()].copy()
-    df.columns = [str(c).strip() for c in df.columns]
-    rename_map = {}
-    for c in df.columns:
-        cl = c.lower()
-        if "symbol" in cl or "ticker" in cl:
-            rename_map[c] = "Ticker"
-        elif "rank" in cl:
-            rename_map[c] = "Zacks Rank"
-    df.rename(columns=rename_map, inplace=True)
-    for c in ["Ticker", "Zacks Rank"]:
-        if c not in df.columns:
-            df[c] = ""
-    return df[["Ticker", "Zacks Rank"]].copy()
-
-G1_PATH = get_latest("zacks_custom_screen_*Growth1*.csv")
-G2_PATH = get_latest("zacks_custom_screen_*Growth2*.csv")
+G1_PATH = get_latest("zacks_custom_screen_*Growth 1*.csv")
+G2_PATH = get_latest("zacks_custom_screen_*Growth 2*.csv")
 DD_PATH = get_latest("zacks_custom_screen_*Defensive*.csv")
 
-g1 = normalize_zacks(safe_read(G1_PATH))
-g2 = normalize_zacks(safe_read(G2_PATH))
-dd = normalize_zacks(safe_read(DD_PATH))
+g1, g2, dd = safe_read(G1_PATH), safe_read(G2_PATH), safe_read(DD_PATH)
 
 if not g1.empty or not g2.empty or not dd.empty:
     st.sidebar.success("✅ Zacks Screens Loaded Successfully")
 else:
-    st.sidebar.warning("⚠️ No Zacks files found in /data.")
+    st.sidebar.warning("⚠️ No Zacks CSVs found in /data.")
 
-# ==============================================================
-#  INTELLIGENCE OVERLAY (FAIL-SAFE)
-# ==============================================================
-
-def safe_concat(frames):
-    clean_frames = []
-    for df in frames:
-        if df is None or df.empty:
-            continue
-        df = df.loc[:, ~df.columns.duplicated()].copy()
-        df.columns = [str(c).strip() if c else f"col_{i}" for i, c in enumerate(df.columns)]
-        if "Ticker" not in df.columns:
-            df["Ticker"] = ""
-        if "Zacks Rank" not in df.columns:
-            df["Zacks Rank"] = ""
-        clean_frames.append(df)
-    if not clean_frames:
-        return pd.DataFrame(columns=["Ticker", "Zacks Rank"])
-    return pd.concat(clean_frames, ignore_index=True, axis=0)
+# ---------- NORMALIZE + MATCH ----------
+def normalize(df):
+    if df.empty: return df
+    tcols = [c for c in df.columns if "ticker" in c.lower() or "symbol" in c.lower()]
+    if tcols: df.rename(columns={tcols[0]: "Ticker"}, inplace=True)
+    if "Zacks Rank" not in df.columns:
+        rcols = [c for c in df.columns if "rank" in c.lower()]
+        if rcols: df.rename(columns={rcols[0]: "Zacks Rank"}, inplace=True)
+    keep = [c for c in ["Ticker", "Zacks Rank"] if c in df.columns]
+    return df[keep].copy()
 
 def cross_match(zdf, pf):
-    if zdf.empty or pf.empty:
-        return pd.DataFrame()
-    pf_t = pf[["Ticker"]].astype(str)
+    if zdf.empty or pf.empty: return pd.DataFrame()
     zdf["Ticker"] = zdf["Ticker"].astype(str)
-    m = zdf.merge(pf_t, on="Ticker", how="left", indicator=True)
+    pf_t = pf["Symbol"].astype(str)
+    m = zdf.merge(pf_t, left_on="Ticker", right_on="Symbol", how="left", indicator=True)
     m["Held?"] = m["_merge"].map({"both": "✔ Held", "left_only": "🟢 Candidate"})
-    m.drop(columns=["_merge"], inplace=True)
-    return m
+    return m.drop(columns=["_merge"])
 
+g1, g2, dd = normalize(g1), normalize(g2), normalize(dd)
+
+# ---------- BUILD INTELLIGENCE OVERLAY ----------
 def build_intel(pf, g1, g2, dd, cash_val, total_val):
-    combined = safe_concat([g1, g2, dd]).drop_duplicates(subset=["Ticker"])
-    held = set(pf["Ticker"].astype(str)) if not pf.empty else set()
-    rank1 = combined[combined["Zacks Rank"].astype(str).str.strip() == "1"].copy()
+    combined = pd.concat([g1, g2, dd], ignore_index=True).drop_duplicates(subset=["Ticker"])
+    held = set(pf["Symbol"].astype(str)) if not pf.empty else set()
+    rank1 = combined[combined["Zacks Rank"].astype(str) == "1"] if "Zacks Rank" in combined else pd.DataFrame()
     new1 = rank1[~rank1["Ticker"].isin(held)]
     held1 = rank1[rank1["Ticker"].isin(held)]
-    cash_pct = (cash_val / total_val) * 100 if total_val > 0 else 0
+    cash_pct = (cash_val / total_val * 100) if total_val else 0
     msg = [
-        "Fox Valley Daily Tactical Overlay",
+        f"Fox Valley Daily Tactical Overlay",
         f"• Portfolio Value: ${total_val:,.2f}",
         f"• Cash Available: ${cash_val:,.2f} ({cash_pct:.2f}%)",
         f"• Total #1 Symbols: {len(rank1)}",
         f"• New #1 Candidates: {len(new1)}",
         f"• Held #1 Positions: {len(held1)}"
     ]
-    return {"narrative": "\n".join(msg), "new": new1, "held": held1, "combined": combined}
+    return {"narrative": "\n".join(msg), "new": new1, "held": held1}
 
 intel = build_intel(portfolio, g1, g2, dd, cash_value, total_value)
 
-# ==============================================================
-#  USER INTERFACE (7 TABS)
-# ==============================================================
-
+# ---------- MAIN TABS ----------
 tabs = st.tabs([
-    "💼 Portfolio Overview",
-    "📊 Growth 1",
-    "📊 Growth 2",
-    "💰 Defensive Dividend",
-    "⚙️ Tactical Decision Matrix",
-    "🧩 Weekly Tactical Summary",
-    "📖 Daily Intelligence Brief"
+    "💼 Portfolio Overview", "📊 Growth 1", "📊 Growth 2",
+    "💰 Defensive Dividend", "⚙️ Tactical Decision Matrix",
+    "🧩 Weekly Tactical Summary", "📖 Daily Intelligence Brief"
 ])
 
 # --- Portfolio Overview ---
@@ -227,61 +142,48 @@ with tabs[0]:
     st.metric("Total Account Value", f"${total_value:,.2f}")
     st.metric("Cash Available to Trade", f"${cash_value:,.2f}")
     st.dataframe(portfolio, use_container_width=True)
-    if not portfolio.empty and "Value" in portfolio.columns:
-        fig = px.pie(portfolio, values="Value", names="Ticker",
-                     title="Portfolio Allocation", hole=0.3)
-        st.plotly_chart(fig, use_container_width=True)
+    if not portfolio.empty:
+        valcol = [c for c in portfolio.columns if "Value" in c or "Total" in c]
+        if valcol:
+            fig = px.pie(portfolio, values=valcol[0], names="Symbol",
+                         title="Portfolio Allocation", hole=0.3)
+            st.plotly_chart(fig, use_container_width=True)
 
 # --- Growth 1 ---
 with tabs[1]:
     st.subheader("Zacks Growth 1 Cross-Match")
     g1m = cross_match(g1, portfolio)
     if not g1m.empty:
-        st.dataframe(
-            g1m.style.map(
-                lambda v: "background-color:#004d00" if str(v) == "1"
-                else "background-color:#665c00" if str(v) == "2"
-                else "background-color:#663300" if str(v) == "3" else "",
-                subset=["Zacks Rank"]
-            ),
-            use_container_width=True
-        )
-    else:
-        st.info("No Growth 1 data available.")
+        st.dataframe(g1m.style.map(
+            lambda v: "background-color:#004d00" if str(v)=="1"
+            else "background-color:#665c00" if str(v)=="2"
+            else "background-color:#663300" if str(v)=="3" else "",
+            subset=["Zacks Rank"] if "Zacks Rank" in g1m.columns else []
+        ), use_container_width=True)
 
 # --- Growth 2 ---
 with tabs[2]:
     st.subheader("Zacks Growth 2 Cross-Match")
     g2m = cross_match(g2, portfolio)
     if not g2m.empty:
-        st.dataframe(
-            g2m.style.map(
-                lambda v: "background-color:#004d00" if str(v) == "1"
-                else "background-color:#665c00" if str(v) == "2"
-                else "background-color:#663300" if str(v) == "3" else "",
-                subset=["Zacks Rank"]
-            ),
-            use_container_width=True
-        )
-    else:
-        st.info("No Growth 2 data available.")
+        st.dataframe(g2m.style.map(
+            lambda v: "background-color:#004d00" if str(v)=="1"
+            else "background-color:#665c00" if str(v)=="2"
+            else "background-color:#663300" if str(v)=="3" else "",
+            subset=["Zacks Rank"] if "Zacks Rank" in g2m.columns else []
+        ), use_container_width=True)
 
 # --- Defensive Dividend ---
 with tabs[3]:
     st.subheader("Zacks Defensive Dividend Cross-Match")
     ddm = cross_match(dd, portfolio)
     if not ddm.empty:
-        st.dataframe(
-            ddm.style.map(
-                lambda v: "background-color:#004d00" if str(v) == "1"
-                else "background-color:#665c00" if str(v) == "2"
-                else "background-color:#663300" if str(v) == "3" else "",
-                subset=["Zacks Rank"]
-            ),
-            use_container_width=True
-        )
-    else:
-        st.info("No Defensive Dividend data available.")
+        st.dataframe(ddm.style.map(
+            lambda v: "background-color:#004d00" if str(v)=="1"
+            else "background-color:#665c00" if str(v)=="2"
+            else "background-color:#663300" if str(v)=="3" else "",
+            subset=["Zacks Rank"] if "Zacks Rank" in ddm.columns else []
+        ), use_container_width=True)
 
 # --- Tactical Decision Matrix ---
 with tabs[4]:
