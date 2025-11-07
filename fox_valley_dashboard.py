@@ -1,9 +1,10 @@
 # ==============================================================
-# 🧭 Fox Valley Intelligence Engine v7.0R – Enterprise Command Deck (Nov 07, 2025)
+# 🧭 Fox Valley Intelligence Engine v7.0R-2 – Enterprise Command Deck (Nov 08, 2025)
 # ==============================================================
-# Purpose: Autonomous tactical intelligence console for Fox Valley Dashboard
-# Reliability: Zero-failure architecture with automatic file detection,
-# safe data validation, and complete crash-proof overlay
+# Author: #1  |  Commander: CaptPicard1
+# Mission: Fault-tolerant tactical investment console for Fox Valley Dashboard
+# Architecture: Auto-detects newest portfolio & Zacks screens, self-repairs malformed data,
+#                never crashes, always operational.
 # ==============================================================
 
 import streamlit as st
@@ -17,7 +18,7 @@ import os
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v7.0R – Enterprise Command Deck",
+    page_title="Fox Valley Intelligence Engine v7.0R-2 – Enterprise Command Deck",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -41,43 +42,40 @@ ARCHIVE_DIR = Path("archive")
 ARCHIVE_DIR.mkdir(exist_ok=True)
 
 # ==============================================================
-#  UTILITY: SAFE FILE RESOLVER + AUTO-ARCHIVE
+#  FILE MANAGEMENT: AUTO-ARCHIVE & LATEST DETECTION
 # ==============================================================
 
 def get_latest(pattern: str):
-    """Return newest file matching pattern inside /data"""
+    """Return newest file matching pattern inside /data and archive older ones."""
     files = list(DATA_DIR.glob(pattern))
     if not files:
         return None
-    # extract date from filename
     date_pattern = re.compile(r"(\d{4}-\d{2}-\d{2})")
     dated = []
     for f in files:
         m = date_pattern.search(str(f))
         if m:
             dated.append((m.group(1), f))
-    if not dated:
-        # fallback: most recent modified
-        latest = max(files, key=lambda x: x.stat().st_mtime)
-    else:
-        latest = max(dated)[1]
-    # move all but latest to archive
+    latest = max(dated, key=lambda x: x[0])[1] if dated else max(files, key=lambda x: x.stat().st_mtime)
+    # Move older files safely
     for f in files:
         if f != latest:
-            shutil.move(str(f), ARCHIVE_DIR / f.name)
+            try:
+                shutil.move(str(f), ARCHIVE_DIR / f.name)
+            except Exception:
+                pass
     return latest
 
 # ==============================================================
-#  LOAD PORTFOLIO
+#  PORTFOLIO LOADER
 # ==============================================================
 
 @st.cache_data
 def load_portfolio():
-    """Load the most recent Fidelity portfolio CSV"""
     latest = get_latest("Portfolio_Positions_*.csv")
     if not latest:
         st.sidebar.error("⚠️ No portfolio files found in /data.")
-        return pd.DataFrame(), "None"
+        return pd.DataFrame(), "None", 0.0, 0.0
 
     st.sidebar.info(f"📁 Active Portfolio File: {latest.name}")
 
@@ -85,32 +83,33 @@ def load_portfolio():
         df = pd.read_csv(latest)
     except Exception as e:
         st.sidebar.error(f"❌ Could not read {latest.name}: {e}")
-        return pd.DataFrame(), latest.name
+        return pd.DataFrame(), latest.name, 0.0, 0.0
 
-    # Normalize columns
+    # Normalize headers
     df.columns = [c.strip() for c in df.columns]
-    # ensure core columns
     rename_map = {}
     for c in df.columns:
         cl = c.lower()
         if "symbol" in cl or "ticker" in cl:
             rename_map[c] = "Ticker"
-        if "value" in cl and "total" in cl:
+        elif "value" in cl and "total" in cl:
             rename_map[c] = "Value"
-        if "gain" in cl and "%" in cl:
+        elif "gain" in cl and "%" in cl:
             rename_map[c] = "GainLoss%"
     df.rename(columns=rename_map, inplace=True)
-    for core in ["Ticker", "Value"]:
-        if core not in df.columns:
-            df[core] = None
+
+    # Ensure required columns exist
+    for col in ["Ticker", "Value"]:
+        if col not in df.columns:
+            df[col] = None
+
     # Convert numerics
     for col in ["GainLoss%", "Value"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # Compute totals
     total_value = df["Value"].sum()
-    cash_rows = df[df["Ticker"].astype(str).str.contains("CASH|MMKT|USD|MONEY", case=False, na=False)]
+    cash_rows = df[df["Ticker"].astype(str).str.contains("CASH|USD|MMKT|MONEY", case=False, na=False)]
     cash_value = cash_rows["Value"].sum() if not cash_rows.empty else 0.0
 
     return df, latest.name, total_value, cash_value
@@ -118,7 +117,7 @@ def load_portfolio():
 portfolio, portfolio_file, total_value, cash_value = load_portfolio()
 
 # ==============================================================
-#  LOAD ZACKS SCREENS
+#  ZACKS SCREEN LOADERS
 # ==============================================================
 
 def safe_read(path):
@@ -132,18 +131,19 @@ def safe_read(path):
 def normalize_zacks(df):
     if df.empty:
         return df
-    df.columns = [c.strip() for c in df.columns]
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    df.columns = [str(c).strip() for c in df.columns]
     rename_map = {}
     for c in df.columns:
         cl = c.lower()
         if "symbol" in cl or "ticker" in cl:
             rename_map[c] = "Ticker"
-        if "rank" in cl:
+        elif "rank" in cl:
             rename_map[c] = "Zacks Rank"
     df.rename(columns=rename_map, inplace=True)
-    for core in ["Ticker", "Zacks Rank"]:
-        if core not in df.columns:
-            df[core] = None
+    for c in ["Ticker", "Zacks Rank"]:
+        if c not in df.columns:
+            df[c] = ""
     return df[["Ticker", "Zacks Rank"]].copy()
 
 G1_PATH = get_latest("zacks_custom_screen_*Growth1*.csv")
@@ -157,11 +157,27 @@ dd = normalize_zacks(safe_read(DD_PATH))
 if not g1.empty or not g2.empty or not dd.empty:
     st.sidebar.success("✅ Zacks Screens Loaded Successfully")
 else:
-    st.sidebar.warning("⚠️ No Zacks files found in /data")
+    st.sidebar.warning("⚠️ No Zacks files found in /data.")
 
 # ==============================================================
-#  CROSS-MATCH + INTELLIGENCE OVERLAY
+#  INTELLIGENCE OVERLAY (FAIL-SAFE)
 # ==============================================================
+
+def safe_concat(frames):
+    clean_frames = []
+    for df in frames:
+        if df is None or df.empty:
+            continue
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+        df.columns = [str(c).strip() if c else f"col_{i}" for i, c in enumerate(df.columns)]
+        if "Ticker" not in df.columns:
+            df["Ticker"] = ""
+        if "Zacks Rank" not in df.columns:
+            df["Zacks Rank"] = ""
+        clean_frames.append(df)
+    if not clean_frames:
+        return pd.DataFrame(columns=["Ticker", "Zacks Rank"])
+    return pd.concat(clean_frames, ignore_index=True, axis=0)
 
 def cross_match(zdf, pf):
     if zdf.empty or pf.empty:
@@ -174,14 +190,9 @@ def cross_match(zdf, pf):
     return m
 
 def build_intel(pf, g1, g2, dd, cash_val, total_val):
-    for df in [g1, g2, dd]:
-        if "Ticker" not in df.columns:
-            df["Ticker"] = ""
-        if "Zacks Rank" not in df.columns:
-            df["Zacks Rank"] = ""
-    combined = pd.concat([g1, g2, dd], ignore_index=True).drop_duplicates(subset=["Ticker"])
+    combined = safe_concat([g1, g2, dd]).drop_duplicates(subset=["Ticker"])
     held = set(pf["Ticker"].astype(str)) if not pf.empty else set()
-    rank1 = combined[combined["Zacks Rank"].astype(str) == "1"].copy()
+    rank1 = combined[combined["Zacks Rank"].astype(str).str.strip() == "1"].copy()
     new1 = rank1[~rank1["Ticker"].isin(held)]
     held1 = rank1[rank1["Ticker"].isin(held)]
     cash_pct = (cash_val / total_val) * 100 if total_val > 0 else 0
