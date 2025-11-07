@@ -1,6 +1,6 @@
 # ============================================
-# 🧭 Fox Valley Intelligence Engine v6.3R-Restoration Build
-# Stable Build – November 7, 2025
+# 🧭 Fox Valley Intelligence Engine v6.3R – Restoration Final
+# Stable Operational Build – November 7, 2025
 # ============================================
 
 import streamlit as st
@@ -12,7 +12,7 @@ import datetime
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v6.3R – Restoration Build",
+    page_title="Fox Valley Intelligence Engine v6.3R – Restoration Final",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -30,38 +30,39 @@ table {color:#fafafa;}
 </style>
 """, unsafe_allow_html=True)
 
-# ---------- PORTFOLIO ----------
+# ---------- PORTFOLIO LOADER ----------
 def load_portfolio():
     files = sorted(Path("data").glob("Portfolio_Positions_*.csv"), key=lambda f: f.stat().st_mtime)
     if not files:
         st.error("⚠️ No portfolio files found in /data.")
         return pd.DataFrame(), 0.0, 0.0
 
-    latest = str(files[-1])
+    latest = files[-1]
     with open(latest, "r", errors="ignore") as f:
         lines = f.readlines()
-    header_line = next((i for i, l in enumerate(lines) if "Symbol" in l), 0)
+
+    # find first header line that contains "Symbol"
+    header_line = next((i for i, l in enumerate(lines) if re.search(r"\bSymbol\b", l)), 0)
 
     df = pd.read_csv(latest, skiprows=header_line)
-    if "Symbol" not in df.columns:
-        st.error("⚠️ No 'Symbol' column detected in portfolio file.")
-        return pd.DataFrame(), 0.0, 0.0
+    df = df[df["Symbol"].notna()]  # drop empty/disclaimer rows
 
-    # numeric conversions
+    # clean numeric fields
     for c in df.columns:
         if df[c].dtype == object:
             df[c] = df[c].replace('[\$,]', '', regex=True)
-        try:
-            df[c] = pd.to_numeric(df[c])
-        except Exception:
-            pass
+            try:
+                df[c] = pd.to_numeric(df[c])
+            except Exception:
+                pass
 
+    # find value column and compute totals
     val_cols = [c for c in df.columns if "Value" in c or "Total" in c]
     total_value = df[val_cols[0]].sum() if val_cols else 0.0
     cash_rows = df["Symbol"].astype(str).str.contains("CASH|MMKT|MONEY|USD", case=False, na=False)
     cash_value = df.loc[cash_rows, val_cols[0]].sum() if val_cols else 0.0
 
-    st.sidebar.info(f"📁 Active Portfolio File: {Path(latest).name}")
+    st.sidebar.info(f"📁 Active Portfolio File: {latest.name}")
     return df, float(total_value), float(cash_value)
 
 portfolio, total_value, cash_value = load_portfolio()
@@ -69,9 +70,7 @@ portfolio, total_value, cash_value = load_portfolio()
 # ---------- AUTO-DETECT ZACKS FILES ----------
 def get_latest(pattern):
     files = list(Path("data").glob(pattern))
-    if not files:
-        return None
-    return str(sorted(files, key=lambda f: f.stat().st_mtime)[-1])
+    return str(sorted(files, key=lambda f: f.stat().st_mtime)[-1]) if files else None
 
 def safe_read(path):
     if not path: return pd.DataFrame()
@@ -112,14 +111,14 @@ g1, g2, dd = normalize(g1), normalize(g2), normalize(dd)
 
 # ---------- BUILD INTELLIGENCE OVERLAY ----------
 def build_intel(pf, g1, g2, dd, cash_val, total_val):
-    combined = pd.concat([g1, g2, dd], ignore_index=True).drop_duplicates(subset=["Ticker"])
+    combined = pd.concat([g1, g2, dd], ignore_index=True).drop_duplicates(subset=["Ticker"], ignore_index=True)
     held = set(pf["Symbol"].astype(str)) if not pf.empty else set()
     rank1 = combined[combined["Zacks Rank"].astype(str) == "1"] if "Zacks Rank" in combined else pd.DataFrame()
     new1 = rank1[~rank1["Ticker"].isin(held)]
     held1 = rank1[rank1["Ticker"].isin(held)]
     cash_pct = (cash_val / total_val * 100) if total_val else 0
     msg = [
-        f"Fox Valley Daily Tactical Overlay",
+        "Fox Valley Daily Tactical Overlay",
         f"• Portfolio Value: ${total_val:,.2f}",
         f"• Cash Available: ${cash_val:,.2f} ({cash_pct:.2f}%)",
         f"• Total #1 Symbols: {len(rank1)}",
@@ -154,36 +153,39 @@ with tabs[1]:
     st.subheader("Zacks Growth 1 Cross-Match")
     g1m = cross_match(g1, portfolio)
     if not g1m.empty:
-        st.dataframe(g1m.style.map(
-            lambda v: "background-color:#004d00" if str(v)=="1"
-            else "background-color:#665c00" if str(v)=="2"
-            else "background-color:#663300" if str(v)=="3" else "",
-            subset=["Zacks Rank"] if "Zacks Rank" in g1m.columns else []
-        ), use_container_width=True)
+        st.dataframe(
+            g1m.style.map(
+                lambda v: "background-color:#004d00" if str(v)=="1"
+                else "background-color:#665c00" if str(v)=="2"
+                else "background-color:#663300" if str(v)=="3" else "",
+                subset=["Zacks Rank"] if "Zacks Rank" in g1m.columns else []
+            ), use_container_width=True)
 
 # --- Growth 2 ---
 with tabs[2]:
     st.subheader("Zacks Growth 2 Cross-Match")
     g2m = cross_match(g2, portfolio)
     if not g2m.empty:
-        st.dataframe(g2m.style.map(
-            lambda v: "background-color:#004d00" if str(v)=="1"
-            else "background-color:#665c00" if str(v)=="2"
-            else "background-color:#663300" if str(v)=="3" else "",
-            subset=["Zacks Rank"] if "Zacks Rank" in g2m.columns else []
-        ), use_container_width=True)
+        st.dataframe(
+            g2m.style.map(
+                lambda v: "background-color:#004d00" if str(v)=="1"
+                else "background-color:#665c00" if str(v)=="2"
+                else "background-color:#663300" if str(v)=="3" else "",
+                subset=["Zacks Rank"] if "Zacks Rank" in g2m.columns else []
+            ), use_container_width=True)
 
 # --- Defensive Dividend ---
 with tabs[3]:
     st.subheader("Zacks Defensive Dividend Cross-Match")
     ddm = cross_match(dd, portfolio)
     if not ddm.empty:
-        st.dataframe(ddm.style.map(
-            lambda v: "background-color:#004d00" if str(v)=="1"
-            else "background-color:#665c00" if str(v)=="2"
-            else "background-color:#663300" if str(v)=="3" else "",
-            subset=["Zacks Rank"] if "Zacks Rank" in ddm.columns else []
-        ), use_container_width=True)
+        st.dataframe(
+            ddm.style.map(
+                lambda v: "background-color:#004d00" if str(v)=="1"
+                else "background-color:#665c00" if str(v)=="2"
+                else "background-color:#663300" if str(v)=="3" else "",
+                subset=["Zacks Rank"] if "Zacks Rank" in ddm.columns else []
+            ), use_container_width=True)
 
 # --- Tactical Decision Matrix ---
 with tabs[4]:
