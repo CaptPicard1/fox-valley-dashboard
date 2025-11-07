@@ -1,5 +1,5 @@
 # ============================================
-# 🧭 FOX VALLEY INTELLIGENCE ENGINE v6.3R-FIDELITY – FINAL COMMAND DECK
+# 🧭 FOX VALLEY INTELLIGENCE ENGINE v6.4R – AUTO-ARCHIVE COMMAND DECK
 # ============================================
 
 import streamlit as st
@@ -8,13 +8,14 @@ import plotly.express as px
 from pathlib import Path
 import re
 import datetime
+import shutil
 
 st.cache_data.clear()
 st.cache_resource.clear()
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v6.3R-Fidelity – Command Deck",
+    page_title="Fox Valley Intelligence Engine v6.4R – Auto-Archive Command Deck",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -33,54 +34,61 @@ table {color:#FAFAFA;}
 """, unsafe_allow_html=True)
 
 # ===============================================================
-#  AUTO-DETECT PORTFOLIO FILE
+#  AUTO-DETECT & AUTO-ARCHIVE PORTFOLIO FILES
 # ===============================================================
-def get_latest_portfolio():
-    data_path = Path("data")
-    if not data_path.exists():
-        st.error("⚠️ /data directory not found.")
-        return None
-    files = list(data_path.glob("Portfolio*.csv"))
-    if not files:
-        st.warning("⚠️ No portfolio files detected in /data.")
-        return None
-    files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
-    latest = files[0]
-    st.sidebar.info(f"📁 Auto-detected portfolio file: {latest.name}")
-    return str(latest)
+def auto_archive_portfolios(data_dir="data", archive_dir="archive"):
+    data_path = Path(data_dir)
+    archive_path = Path(archive_dir)
+    archive_path.mkdir(exist_ok=True)
 
-@st.cache_data
-def load_portfolio():
-    latest_path = get_latest_portfolio()
-    if not latest_path:
-        return pd.DataFrame()
+    portfolio_files = sorted(data_path.glob("Portfolio_Positions_*.csv"))
+    if len(portfolio_files) <= 1:
+        return None, 0  # Nothing to archive
+
+    latest_file = max(portfolio_files, key=lambda f: f.stat().st_mtime)
+    archived_count = 0
+
+    for f in portfolio_files:
+        if f != latest_file:
+            dest = archive_path / f.name
+            shutil.move(str(f), str(dest))
+            archived_count += 1
+
+    return latest_file, archived_count
+
+def load_latest_portfolio():
+    latest_file, archived_count = auto_archive_portfolios()
+    if not latest_file:
+        st.warning("⚠️ No portfolio files found in /data.")
+        return pd.DataFrame(), "", 0
+
+    st.sidebar.info(f"📁 Active Portfolio File: {latest_file.name}")
+    if archived_count > 0:
+        st.sidebar.success(f"🧹 Auto-archived {archived_count} older portfolio file(s).")
+
     try:
-        df = pd.read_csv(latest_path)
+        df = pd.read_csv(latest_file)
     except Exception as e:
-        st.error(f"⚠️ Could not read {latest_path}: {e}")
-        return pd.DataFrame()
+        st.error(f"⚠️ Could not read portfolio file: {e}")
+        return pd.DataFrame(), latest_file.name, archived_count
 
-    # --- Clean Fidelity structure ---
+    # Drop unnecessary columns
     drop_cols = [c for c in df.columns if "account" in c.lower()]
     df.drop(columns=drop_cols, inplace=True, errors="ignore")
 
     # Normalize column names
-    if "Symbol" in df.columns:
-        df.rename(columns={"Symbol": "Ticker"}, inplace=True)
-    if "Current Value" in df.columns:
-        df.rename(columns={"Current Value": "Value"}, inplace=True)
+    df.rename(columns={"Symbol": "Ticker", "Current Value": "Value"}, inplace=True)
 
-    # Coerce numeric
-    for c in ["Value"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c].astype(str).str.replace("[^0-9.\-]", "", regex=True), errors="coerce")
+    # Clean numeric columns
+    if "Value" in df.columns:
+        df["Value"] = pd.to_numeric(df["Value"].astype(str).str.replace("[^0-9.\-]", "", regex=True), errors="coerce")
 
-    # Remove blank / footer rows
+    # Drop blanks
     df = df.dropna(subset=["Ticker", "Value"], how="any")
 
-    return df
+    return df, latest_file.name, archived_count
 
-portfolio = load_portfolio()
+portfolio, active_file, archived_count = load_latest_portfolio()
 
 # ---------- CALCULATE TOTALS ----------
 if not portfolio.empty and "Value" in portfolio.columns:
