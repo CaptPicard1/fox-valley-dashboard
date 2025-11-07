@@ -1,5 +1,5 @@
 # ============================================
-# 🧭 FOX VALLEY INTELLIGENCE ENGINE v6.4R – AUTO-ARCHIVE COMMAND DECK
+# 🧭 FOX VALLEY INTELLIGENCE ENGINE v6.4R-STABLE – SAFE AUTO-ARCHIVE COMMAND DECK
 # ============================================
 
 import streamlit as st
@@ -15,7 +15,7 @@ st.cache_resource.clear()
 
 # ---------- PAGE CONFIG ----------
 st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v6.4R – Auto-Archive Command Deck",
+    page_title="Fox Valley Intelligence Engine v6.4R-Stable – Safe Auto-Archive Command Deck",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -34,61 +34,61 @@ table {color:#FAFAFA;}
 """, unsafe_allow_html=True)
 
 # ===============================================================
-#  AUTO-DETECT & AUTO-ARCHIVE PORTFOLIO FILES
+#  SAFE AUTO-ARCHIVE + PORTFOLIO LOAD
 # ===============================================================
-def auto_archive_portfolios(data_dir="data", archive_dir="archive"):
+def safe_auto_archive(data_dir="data", archive_dir="archive"):
     data_path = Path(data_dir)
     archive_path = Path(archive_dir)
     archive_path.mkdir(exist_ok=True)
 
     portfolio_files = sorted(data_path.glob("Portfolio_Positions_*.csv"))
-    if len(portfolio_files) <= 1:
-        return None, 0  # Nothing to archive
+    if not portfolio_files:
+        return None, 0
 
-    latest_file = max(portfolio_files, key=lambda f: f.stat().st_mtime)
-    archived_count = 0
-
+    # determine newest by modification time or name order
+    latest = max(portfolio_files, key=lambda f: (f.stat().st_mtime, f.name))
+    archived = 0
     for f in portfolio_files:
-        if f != latest_file:
+        if f != latest and f.exists():
             dest = archive_path / f.name
-            shutil.move(str(f), str(dest))
-            archived_count += 1
+            try:
+                shutil.move(str(f), str(dest))
+                archived += 1
+            except Exception:
+                pass
+    return latest, archived
 
-    return latest_file, archived_count
-
-def load_latest_portfolio():
-    latest_file, archived_count = auto_archive_portfolios()
+def load_portfolio():
+    latest_file, archived_count = safe_auto_archive()
     if not latest_file:
-        st.warning("⚠️ No portfolio files found in /data.")
-        return pd.DataFrame(), "", 0
+        st.error("⚠️ No portfolio files found in /data.")
+        return pd.DataFrame(), None, archived_count
 
     st.sidebar.info(f"📁 Active Portfolio File: {latest_file.name}")
     if archived_count > 0:
-        st.sidebar.success(f"🧹 Auto-archived {archived_count} older portfolio file(s).")
+        st.sidebar.success(f"🧹 Auto-archived {archived_count} older file(s).")
 
     try:
         df = pd.read_csv(latest_file)
     except Exception as e:
-        st.error(f"⚠️ Could not read portfolio file: {e}")
+        st.error(f"⚠️ Error reading portfolio file: {e}")
         return pd.DataFrame(), latest_file.name, archived_count
 
-    # Drop unnecessary columns
     drop_cols = [c for c in df.columns if "account" in c.lower()]
     df.drop(columns=drop_cols, inplace=True, errors="ignore")
 
-    # Normalize column names
+    # normalize Fidelity headers
     df.rename(columns={"Symbol": "Ticker", "Current Value": "Value"}, inplace=True)
 
-    # Clean numeric columns
     if "Value" in df.columns:
-        df["Value"] = pd.to_numeric(df["Value"].astype(str).str.replace("[^0-9.\-]", "", regex=True), errors="coerce")
-
-    # Drop blanks
+        df["Value"] = pd.to_numeric(
+            df["Value"].astype(str).str.replace("[^0-9.\\-]", "", regex=True),
+            errors="coerce"
+        )
     df = df.dropna(subset=["Ticker", "Value"], how="any")
-
     return df, latest_file.name, archived_count
 
-portfolio, active_file, archived_count = load_latest_portfolio()
+portfolio, active_name, archived_count = load_portfolio()
 
 # ---------- CALCULATE TOTALS ----------
 if not portfolio.empty and "Value" in portfolio.columns:
@@ -101,21 +101,17 @@ else:
 st.sidebar.info(f"💰 Portfolio Loaded — Total ${total_value:,.2f} | Cash ${cash_value:,.2f}")
 
 # ===============================================================
-#  AUTO-DETECT ZACKS FILES
+#  ZACKS AUTO-DETECTION
 # ===============================================================
 def get_latest(pattern):
     files = Path("data").glob(pattern)
-    date_pattern = re.compile(r"(\d{4}-\d{2}-\d{2})")
+    date_pattern = re.compile(r"(\\d{4}-\\d{2}-\\d{2})")
     dated = []
     for f in files:
         m = date_pattern.search(str(f))
         if m:
             dated.append((m.group(1), f))
     return str(max(dated)[1]) if dated else None
-
-G1_PATH = get_latest("zacks_custom_screen_*Growth1*.csv") or get_latest("zacks_custom_screen_*Growth 1*.csv")
-G2_PATH = get_latest("zacks_custom_screen_*Growth2*.csv") or get_latest("zacks_custom_screen_*Growth 2*.csv")
-DD_PATH = get_latest("zacks_custom_screen_*Defensive*.csv") or get_latest("zacks_custom_screen_*Defensive Dividends*.csv")
 
 def safe_read(p):
     if not p:
@@ -125,9 +121,11 @@ def safe_read(p):
     except Exception:
         return pd.DataFrame()
 
-g1 = safe_read(G1_PATH)
-g2 = safe_read(G2_PATH)
-dd = safe_read(DD_PATH)
+G1_PATH = get_latest("zacks_custom_screen_*Growth1*.csv") or get_latest("zacks_custom_screen_*Growth 1*.csv")
+G2_PATH = get_latest("zacks_custom_screen_*Growth2*.csv") or get_latest("zacks_custom_screen_*Growth 2*.csv")
+DD_PATH = get_latest("zacks_custom_screen_*Defensive*.csv") or get_latest("zacks_custom_screen_*Defensive Dividends*.csv")
+
+g1, g2, dd = safe_read(G1_PATH), safe_read(G2_PATH), safe_read(DD_PATH)
 
 if not g1.empty or not g2.empty or not dd.empty:
     st.sidebar.success("✅ Latest Zacks screens auto-detected.")
@@ -180,7 +178,7 @@ def build_intel(pf, g1, g2, dd, cash_val, total_val):
         f"• New #1 Candidates: {len(new1)}",
         f"• Held #1 Positions: {len(held1)}"
     ]
-    return {"narrative": "\n".join(msg), "new": new1, "held": held1, "combined": combined}
+    return {"narrative": "\\n".join(msg), "new": new1, "held": held1, "combined": combined}
 
 intel = build_intel(portfolio, g1, g2, dd, cash_value, total_value)
 
@@ -188,13 +186,8 @@ intel = build_intel(portfolio, g1, g2, dd, cash_value, total_value)
 #  MAIN INTERFACE
 # ===============================================================
 tabs = st.tabs([
-    "💼 Portfolio Overview",
-    "📊 Growth 1",
-    "📊 Growth 2",
-    "💰 Defensive Dividend",
-    "⚙️ Tactical Decision Matrix",
-    "🧩 Weekly Tactical Summary",
-    "📖 Daily Intelligence Brief"
+    "💼 Portfolio Overview","📊 Growth 1","📊 Growth 2","💰 Defensive Dividend",
+    "⚙️ Tactical Decision Matrix","🧩 Weekly Tactical Summary","📖 Daily Intelligence Brief"
 ])
 
 # --- Portfolio Overview ---
@@ -212,45 +205,33 @@ with tabs[1]:
     st.subheader("Zacks Growth 1 Cross-Match")
     g1m = cross_match(g1, portfolio)
     if not g1m.empty:
-        st.dataframe(
-            g1m.style.map(
-                lambda v: "background-color:#004d00" if str(v) == "1"
-                else "background-color:#665c00" if str(v) == "2"
-                else "background-color:#663300" if str(v) == "3" else "",
-                subset=["Zacks Rank"]
-            ),
-            use_container_width=True
-        )
+        st.dataframe(g1m.style.map(
+            lambda v: "background-color:#004d00" if str(v)=="1"
+            else "background-color:#665c00" if str(v)=="2"
+            else "background-color:#663300" if str(v)=="3" else "",
+            subset=["Zacks Rank"]), use_container_width=True)
 
 # --- Growth 2 ---
 with tabs[2]:
     st.subheader("Zacks Growth 2 Cross-Match")
     g2m = cross_match(g2, portfolio)
     if not g2m.empty:
-        st.dataframe(
-            g2m.style.map(
-                lambda v: "background-color:#004d00" if str(v) == "1"
-                else "background-color:#665c00" if str(v) == "2"
-                else "background-color:#663300" if str(v) == "3" else "",
-                subset=["Zacks Rank"]
-            ),
-            use_container_width=True
-        )
+        st.dataframe(g2m.style.map(
+            lambda v: "background-color:#004d00" if str(v)=="1"
+            else "background-color:#665c00" if str(v)=="2"
+            else "background-color:#663300" if str(v)=="3" else "",
+            subset=["Zacks Rank"]), use_container_width=True)
 
 # --- Defensive Dividend ---
 with tabs[3]:
     st.subheader("Zacks Defensive Dividend Cross-Match")
     ddm = cross_match(dd, portfolio)
     if not ddm.empty:
-        st.dataframe(
-            ddm.style.map(
-                lambda v: "background-color:#004d00" if str(v) == "1"
-                else "background-color:#665c00" if str(v) == "2"
-                else "background-color:#663300" if str(v) == "3" else "",
-                subset=["Zacks Rank"]
-            ),
-            use_container_width=True
-        )
+        st.dataframe(ddm.style.map(
+            lambda v: "background-color:#004d00" if str(v)=="1"
+            else "background-color:#665c00" if str(v)=="2"
+            else "background-color:#663300" if str(v)=="3" else "",
+            subset=["Zacks Rank"]), use_container_width=True)
 
 # --- Tactical Decision Matrix ---
 with tabs[4]:
@@ -272,7 +253,7 @@ with tabs[5]:
 # --- Daily Intelligence Brief ---
 with tabs[6]:
     st.subheader("📖 Fox Valley Daily Intelligence Brief")
-    st.markdown(f"```text\n{intel['narrative']}\n```")
+    st.markdown(f"```text\\n{intel['narrative']}\\n```")
     st.caption(f"Generated {datetime.datetime.now():%A, %B %d, %Y – %I:%M %p CST}")
     st.markdown("### 🟢 New Zacks Rank #1 Candidates")
     if not intel["new"].empty:
