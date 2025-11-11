@@ -1,137 +1,131 @@
-# 🧭 Fox Valley Intelligence Engine v7.3R – Enterprise Command Deck
-# Final Stable Build – November 11, 2025
-# © 2025 CaptPicard1 | Streamlit Implementation by #1 (GPT-5)
-# Mission: Fully automated portfolio intelligence dashboard with archive management,
-# diagnostics, and integrated Zacks screen analysis.
-
+```python
 import streamlit as st
 import pandas as pd
 from pathlib import Path
 import shutil
 import io
 
-# ----------------------- Streamlit Configuration -----------------------
-st.set_page_config(
-    page_title="Fox Valley Intelligence Engine v7.3R",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Fox Valley Intelligence Engine v7.3R", layout="wide")
+st.title("🧭 Fox Valley Intelligence Engine – Enterprise Command Deck")
 
-st.title("🧭 Fox Valley Intelligence Engine – Enterprise Command Deck (v7.3R)")
-st.caption("Final Stable Build – November 11, 2025")
-
-# ----------------------- Directory Configuration -----------------------
 DATA_DIR = Path("data")
 ARCHIVE_DIR = Path("archive")
 ARCHIVE_DIR.mkdir(exist_ok=True)
 
-# ----------------------- Helper: Auto-Archive Old Portfolio Files -----------------------
-def auto_archive_files():
-    portfolios = sorted(DATA_DIR.glob("Portfolio_Positions_*.csv"), key=lambda f: f.stat().st_mtime)
-    if len(portfolios) > 1:
-        for old_file in portfolios[:-1]:
-            dest = ARCHIVE_DIR / old_file.name
-            shutil.move(str(old_file), dest)
-            st.sidebar.warning(f"📦 Archived: {old_file.name}")
+# ---------- Auto-archive old Portfolio and Zacks files ----------
+def auto_archive(pattern):
+files = sorted(DATA_DIR.glob(pattern), key=lambda f: f.stat().st_mtime)
+if len(files) > 1:
+for old in files[:-1]:
+shutil.move(str(old), ARCHIVE_DIR / old.name)
+st.sidebar.info(f"Archived: {old.name}")
 
-# ----------------------- Helper: Load CSV with Header Detection -----------------------
-def load_csv_with_header_detection(filepath):
-    text = filepath.read_text(errors="ignore")
-    lines = text.splitlines()
-    header_idx = next((i for i, l in enumerate(lines) if l.count(",") >= 3), 0)
-    df = pd.read_csv(io.StringIO("\n".join(lines[header_idx:])))
-    df = df.dropna(how="all")
-    df.columns = [c.strip() for c in df.columns]
-    return df
+auto_archive("Portfolio_Positions_*.csv")
+for pattern in ["zacks_custom_screen_Growth.csv", "zacks_custom_screen_Defensive.csv"]:
+auto_archive(pattern)
 
-# ----------------------- Helper: Load Latest Portfolio -----------------------
-def load_latest_portfolio():
-    files = sorted(DATA_DIR.glob("Portfolio_Positions_*.csv"), key=lambda f: f.stat().st_mtime)
-    if not files:
-        st.error("⚠️ No portfolio files found in /data.")
-        return pd.DataFrame(), 0.0, 0.0
-    latest = files[-1]
-    df = load_csv_with_header_detection(latest)
+# ---------- UNIVERSAL CSV LOADER WITH HEADER DETECTION ----------
+def load_latest(pattern):
+files = sorted(DATA_DIR.glob(pattern), key=lambda f: f.stat().st_mtime)
+if not files:
+return None
+f = files[-1]
+text = f.read_text(errors="ignore")
+lines = text.splitlines()
+header = next((i for i, l in enumerate(lines) if l.count(",") >= 3), 0)
+df = pd.read_csv(io.StringIO("\n".join(lines[header:])))
+df = df.dropna(how="all")
+df.columns = [c.strip() for c in df.columns]
+for c in df.columns:
+if df[c].dtype == object:
+df[c] = df[c].replace(r"[\$,]", "", regex=True)
+try:
+df[c] = pd.to_numeric(df[c], errors="ignore")
+except:
+pass
+return df, f.name
 
-    st.sidebar.success(f"📁 Active Portfolio File: {latest.name}")
-    st.sidebar.write(f"Loaded {len(df)} rows and {len(df.columns)} columns")
+# ---------- LOAD DATA ----------
+portfolio, pf_file = load_latest("Portfolio_Positions_*.csv") or (pd.DataFrame(), "")
+zacks_growth1, z1_file = load_latest("zacks_custom_screen_Growth 1.csv") or (pd.DataFrame(), "")
+zacks_growth2, z2_file = load_latest("zacks_custom_screen_Growth 2.csv") or (pd.DataFrame(), "")
+zacks_div, zd_file = load_latest("zacks_custom_screen_Defensive.csv") or (pd.DataFrame(), "")
 
-    # Clean numeric data and identify totals/cash
-    for c in df.columns:
-        if df[c].dtype == object:
-            df[c] = df[c].replace(r"[\$,]", "", regex=True)
-            df[c] = pd.to_numeric(df[c], errors="ignore")
+# ---------- COLUMN/TYPE DIAGNOSTICS ----------
+def find_cols(df, keys, stcontainer):
+keys = [k.lower() for k in keys]
+matches = [c for c in df.columns if any(k in c.lower() for k in keys)]
+stcontainer.write(f"Columns: {df.columns.tolist()}")
+stcontainer.write(f"Types: {df.dtypes}")
+stcontainer.write(f"Candidate columns: {matches}")
+return matches
 
-    value_cols = [c for c in df.columns if any(x in c.lower() for x in ["value", "amount", "total"])]
-    cash_cols = [c for c in df.columns if "cash" in c.lower()]
-
-    total_val = df[value_cols].select_dtypes(include="number").sum().sum() if value_cols else 0
-    cash_val = df[cash_cols].select_dtypes(include="number").sum().sum() if cash_cols else 0
-
-    return df, total_val, cash_val
-
-# ----------------------- Helper: Load Zacks Screen Files -----------------------
-def load_zacks_screens():
-    screens = {}
-    for name in ["Growth 1", "Growth 2", "Defensive Dividends"]:
-        match = list(DATA_DIR.glob(f"*{name}*.csv"))
-        if match:
-            f = sorted(match, key=lambda x: x.stat().st_mtime)[-1]
-            df = load_csv_with_header_detection(f)
-            st.sidebar.success(f"📁 Active Zacks File: {f.name}")
-            st.sidebar.write(f"Loaded {len(df)} rows, {len(df.columns)} columns")
-            screens[name] = df
-        else:
-            st.sidebar.warning(f"⚠️ Missing Zacks file: {name}")
-            screens[name] = pd.DataFrame()
-    return screens
-
-# ----------------------- Load Everything -----------------------
-auto_archive_files()
-portfolio, total_value, cash_value = load_latest_portfolio()
-zacks = load_zacks_screens()
-
-# ----------------------- Display Diagnostics -----------------------
-with st.expander("🧩 Diagnostic Console", expanded=False):
-    st.write("**Portfolio columns:**", list(portfolio.columns) if not portfolio.empty else "None")
-    st.write("**Growth 1 columns:**", list(zacks["Growth 1"].columns) if not zacks["Growth 1"].empty else "None")
-    st.write("**Growth 2 columns:**", list(zacks["Growth 2"].columns) if not zacks["Growth 2"].empty else "None")
-    st.write("**Defensive Dividends columns:**", list(zacks["Defensive Dividends"].columns) if not zacks["Defensive Dividends"].empty else "None")
-
-# ----------------------- Tabs -----------------------
-tabs = st.tabs([
-    "💼 Portfolio Overview", "📊 Growth 1", "📊 Growth 2",
-    "💰 Defensive Dividends", "⚙️ Tactical Matrix",
-    "🧩 Weekly Tactical Summary", "📖 Daily Intelligence Brief"
+# ---------- STREAMLIT TABS ----------
+tab1, tab2, tab3, tab4 = st.tabs([
+"Portfolio Overview", "Growth Screens", "Tactical Matrix", "Intelligence Briefs"
 ])
 
-# ----------------------- Portfolio Overview Tab -----------------------
-with tabs[0]:
-    if not portfolio.empty:
-        st.metric("📊 Total Account Value", f"${total_value:,.2f}")
-        st.metric("💵 Cash Available to Trade", f"${cash_value:,.2f}")
-        st.dataframe(portfolio, use_container_width=True)
-    else:
-        st.warning("No portfolio data available.")
+with tab1:
+st.header("Portfolio Overview")
+if not portfolio.empty:
+value_cols = find_cols(portfolio, ["total", "value", "market", "amount"], st)
+cash_cols = find_cols(portfolio, ["cash"], st)
+total = portfolio[value_cols[0]].sum() if value_cols else 0.0
+cash = portfolio[cash_cols[0]].sum() if cash_cols else 0.0
+st.metric("Portfolio Total Value", f"${total:,.2f}")
+st.metric("Cash Value", f"${cash:,.2f}")
+st.dataframe(portfolio)
+st.caption(f"Source: {pf_file}")
+else:
+st.error("Portfolio Data Not Found.")
 
-# ----------------------- Growth Tabs -----------------------
-for i, name in enumerate(["Growth 1", "Growth 2", "Defensive Dividends"], start=1):
-    with tabs[i]:
-        df = zacks[name]
-        if not df.empty:
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.warning(f"No data for {name}")
+with tab2:
+st.header("Zacks Growth Screens")
+if not zacks_growth1.empty:
+st.subheader("Growth 1")
+st.dataframe(zacks_growth1)
+st.caption(f"Source: {z1_file}")
+if not zacks_growth2.empty:
+st.subheader("Growth 2")
+st.dataframe(zacks_growth2)
+st.caption(f"Source: {z2_file}")
+if not zacks_div.empty:
+st.subheader("Defensive Dividend")
+st.dataframe(zacks_div)
+st.caption(f"Source: {zd_file}")
+if zacks_growth1.empty and zacks_growth2.empty and zacks_div.empty:
+st.error("No Zacks Growth Data Found.")
 
-# ----------------------- Tactical Matrix -----------------------
-with tabs[4]:
-    st.info("Auto-generated intelligence summaries will appear here after validation logic integration.")
+with tab3:
+st.header("Tactical Matrix: Portfolio & Zacks Cross-Match")
+if not portfolio.empty and not zacks_growth1.empty:
+# Find possible ticker columns dynamically
+pf_ticker_col = find_cols(portfolio, ["symbol", "ticker"], st)[0]
+z1_ticker_col = find_cols(zacks_growth1, ["symbol", "ticker"], st)[0]
+if "zacks" in " ".join(zacks_growth1.columns).lower():
+zacks_rank_cols = [c for c in zacks_growth1.columns if "zacks" in c.lower() and "rank" in c.lower()]
+if zacks_rank_cols:
+# Cross-match Rank = 1
+merged = portfolio.merge(
+zacks_growth1[zacks_growth1[zacks_rank_cols[0]] == 1],
+left_on=pf_ticker_col, right_on=z1_ticker_col, how="inner", suffixes=('_pf', '_zacks')
+)
+st.write("Holdings with Zacks Rank = 1:")
+st.dataframe(merged)
+else:
+st.warning("No Zacks Rank column found in Growth 1 file.")
+else:
+st.warning("No Zacks Rank detected in Growth 1 columns.")
+else:
+st.info("Need both Portfolio and Zacks Growth 1 data to cross-match holdings.")
 
-# ----------------------- Weekly Tactical Summary -----------------------
-with tabs[5]:
-    st.info("Weekly summary will appear here.")
+with tab4:
+st.header("Intelligence Briefs")
+st.markdown("""
+- Data Pipeline: Latest files auto-ingested from `/data`, old files archived in `/archive`
+- Diagnostics: Column/Type logic and file sources displayed in each tab
+- Tactical Matrix: Cross-matches active holdings with Zacks Rank = 1
+- Expansion: Add charts, alerts, and new signals as needed
+""")
 
-# ----------------------- Daily Intelligence Brief -----------------------
-with tabs[6]:
-    st.success("✅ Enterprise Command Deck v7.3R Operational")
-    st.caption("All systems nominal. Data sources synchronized. Tactical intelligence feed stable.")
+```
