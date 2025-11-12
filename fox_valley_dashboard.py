@@ -62,7 +62,7 @@ EXPECTED_PORT_COLS = {
 # ──────────────────────────────────────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
 def load_csv(path: str) -> Tuple[pd.DataFrame, List[str]]:
-    """Robust CSV loader with numeric coercion and column cleanup.
+    """Robust CSV loader with aggressive numeric cleaning (handles $ , % and (negatives)).
     Returns df, messages[] (warnings/info).
     """
     msgs = []
@@ -76,24 +76,56 @@ def load_csv(path: str) -> Tuple[pd.DataFrame, List[str]]:
     # Strip columns and normalize common headers
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Coerce numerics for common fields
+    def clean_num_series(s: pd.Series) -> pd.Series:
+        # Convert currency/percent strings like "$1,234.56", "(2.5%)" to floats
+        def _scrub(x):
+            if pd.isna(x):
+                return np.nan
+            t = str(x).strip()
+            neg = t.startswith("(") and t.endswith(")")
+            t = t.replace("(", "").replace(")", "")
+            t = t.replace("$", "").replace(",", "").replace("%", "")
+            try:
+                v = float(t)
+            except:
+                return np.nan
+            return -v if neg else v
+        return s.apply(_scrub)
+
+    # Harmonize common alternate headers first
+    rename_map = {
+        "Price": "Current Price",
+        "Last Price": "Current Price",
+        "Market Value": "Current Value",
+        "Position Value": "Current Value",
+        "Value": "Current Value",
+    }
+    for k, v in rename_map.items():
+        if k in df.columns and v not in df.columns:
+            df[v] = df[k]
+
+    # Clean numerics
     for col in [
-        "Shares", "Current Price", "Current Value", "Cost Basis",
-        "Day Change %", "Gain/Loss %", "Zacks Rank",
+        "Shares", "Current Price", "Current Value", "Cost Basis", "Average Cost",
+        "Day Change %", "Gain/Loss %", "Zacks Rank", "Day Gain", "Gain $",
     ]:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+            df[col] = clean_num_series(df[col])
 
-    # Some exports use different naming; add best-effort harmonization
-    if "Price" in df.columns and "Current Price" not in df.columns:
-        df["Current Price"] = pd.to_numeric(df["Price"], errors="coerce")
-    if "Value" in df.columns and "Current Value" not in df.columns:
-        df["Current Value"] = pd.to_numeric(df["Value"], errors="coerce")
+    # If Average Cost provided but Cost Basis missing, derive per-share basis
+    if "Cost Basis" not in df.columns and "Average Cost" in df.columns:
+        df["Cost Basis"] = df["Average Cost"]
 
-    # Compute Current Value if missing
+    # Compute Current Value if missing and we have Shares×Price
     if "Current Value" not in df.columns and {"Shares", "Current Price"}.issubset(df.columns):
         df["Current Value"] = df["Shares"] * df["Current Price"]
         msgs.append("Computed 'Current Value' = Shares × Current Price")
+
+    # Ensure Zacks Rank numeric if present under variants
+    for zr in ["Zacks Rank", "ZacksRank", "Rank"]:
+        if zr in df.columns:
+            df["Zacks Rank"] = pd.to_numeric(df[zr], errors="coerce")
+            break
 
     return df, msgs
 
@@ -273,23 +305,41 @@ for m in g1_msgs + g2_msgs + dd_msgs:
 # ──────────────────────────────────────────────────────────────────────────────
 # PORTFOLIO OVERVIEW
 # ──────────────────────────────────────────────────────────────────────────────
-st.markdown("\n---\n")
+st.markdown("
+---
+")
 st.subheader("📊 Portfolio Overview")
 
-est_total = float(pd.to_numeric(portfolio_df.get("Current Value", pd.Series(dtype=float)), errors='coerce').sum()) if not portfolio_df.empty else 0.0
+# Accept multiple possible value columns from broker exports
+value_candidates = ["Current Value", "Market Value", "Position Value", "Value"]
+value_col = next((c for c in value_candidates if c in portfolio_df.columns), None)
+if value_col is None:
+    est_total = 0.0
+else:
+    est_total = float(pd.to_numeric(portfolio_df[value_col], errors='coerce').sum())
+
+# Cash inference
 est_cash = infer_cash(portfolio_df)
 
 m1, m2, m3, m4 = st.columns(4)
 with m1:
-    st.metric("Estimated Total Value", human_money(est_total))
+    st.metric("Estimated Total Value", human_money(est_total), help=f"Summed from '{value_col}'" if value_col else "No value column detected")
 with m2:
     st.metric("Estimated Cash Value", human_money(est_cash))
 with m3:
-    day_gain = float(pd.to_numeric(portfolio_df.get("Day Gain", pd.Series(dtype=float)), errors='coerce').sum()) if "Day Gain" in portfolio_df.columns else float('nan')
+    dg_col = next((c for c in ["Day Gain", "Day Change $", "Change $"] if c in portfolio_df.columns), None)
+    if dg_col:
+        day_gain = float(pd.to_numeric(portfolio_df[dg_col], errors='coerce').sum())
+    else:
+        day_gain = float('nan')
     st.metric("Day Gain (sum)", human_money(day_gain) if not math.isnan(day_gain) else "—")
 with m4:
-    gl_pct = pd.to_numeric(portfolio_df.get("Gain/Loss %", pd.Series(dtype=float)), errors='coerce')
-    st.metric("Avg Gain/Loss %", f"{gl_pct.mean():.2f}%" if not gl_pct.empty else "—")
+    gl_pct_series = None
+    for cand in ["Gain/Loss %", "Gain %", "Return %"]:
+        if cand in portfolio_df.columns:
+            gl_pct_series = pd.to_numeric(portfolio_df[cand], errors='coerce')
+            break
+    st.metric("Avg Gain/Loss %", f"{gl_pct_series.mean():.2f}%" if gl_pct_series is not None else "—")
 
 if not portfolio_df.empty:
     with st.expander("Show portfolio table"):
