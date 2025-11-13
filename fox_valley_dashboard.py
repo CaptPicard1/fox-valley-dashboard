@@ -1,477 +1,422 @@
 # ================================================================
-# 🧭 Fox Valley Intelligence Engine – Enterprise Command Deck
-# Version: v7.3R-4.5 "Fidelity Autopilot Edition"
-# Full-file replacement for fox_valley_dashboard.py
-# Auto-detects latest files + fully auto-maps ALL Fidelity formats
+# 🧭 Fox Valley Intelligence Engine — Enterprise Command Deck v7.4R
+# Unified Production Build — Nov 2025
+# Portfolio • Zacks • Tactical • Allocation • Evolution • Sector • Export
 # Author: #1 for CaptPicard
 # ================================================================
 
 import os
 import io
+import csv
 import math
-import time
 import zipfile
-from datetime import datetime
-from typing import List, Tuple
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 import altair as alt
+from datetime import datetime
 
-# ----------------------------------------------------------------
-# PAGE CONFIG & VISUAL FRAMEWORK
-# ----------------------------------------------------------------
+# ================================================================
+# PAGE CONFIG / GLOBAL STYLE
+# ================================================================
 st.set_page_config(
-    page_title="Fox Valley Command Deck v7.3R-4.5 — Fidelity Autopilot",
+    page_title="Fox Valley Intelligence Engine — Command Deck v7.4R",
     page_icon="🧭",
-    layout="wide"
+    layout="wide",
 )
 
 st.markdown(
     """
     <style>
-        div.block-container {
-            padding-top: 1.5rem;
-            max-width: 1750px;
-        }
-        .section-card {
-            background: rgba(255,255,255,0.03);
-            border: 1px solid rgba(255,255,255,0.08);
-            border-radius: 16px;
-            padding: 1rem 1.5rem;
-            margin-bottom: 1.5rem;
-        }
-        .metric-good { color: #22c55e; font-weight: 600; }
-        .metric-warn { color: #f59e0b; font-weight: 600; }
-        .metric-bad { color: #ef4444; font-weight: 700; }
-        th, td {
-            font-size: 0.95rem !important;
-        }
+    div.block-container{padding-top:1.3rem;}
+    .section-card{
+        background:rgba(255,255,255,.03);
+        border:1px solid rgba(255,255,255,.07);
+        border-radius:18px;
+        padding:1rem 1.5rem;
+        margin-bottom:1rem;
+    }
     </style>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
-# ----------------------------------------------------------------
-# CONSTANTS & DATA PATH
-# ----------------------------------------------------------------
+# ================================================================
+# CORE HELPERS
+# ================================================================
 DATA_PATH = "data"
 
-# ----------------------------------------------------------------
-# FIDELITY AUTO-MAPPING ENGINE (NEW FOR v7.3R-4.5)
-# ----------------------------------------------------------------
-# This module makes the Command Deck compatible with:
-#  - Older Fidelity CSVs
-#  - Newer Fidelity CSVs (Nov 2025+)
-#  - Future Fidelity format updates
-# by translating whatever Fidelity exports → Command Deck internal schema.
-# ----------------------------------------------------------------
+def money(x):
+    if pd.isna(x): return "—"
+    return f"${x:,.2f}"
 
-FIDELITY_COLUMN_MAP = {
-    # Ticker / Symbol
-    "Symbol": "Ticker",
-    "Ticker": "Ticker",
+def clean_numeric(s):
+    if pd.isna(s): return np.nan
+    t = str(s).replace("$","").replace(",","").replace("%","").strip()
+    if t.startswith("(") and t.endswith(")"):
+        try: return -float(t.replace("(","").replace(")",""))
+        except: return np.nan
+    try: return float(t)
+    except: return np.nan
 
-    # Shares / Quantity
-    "Quantity": "Shares",
-    "Shares": "Shares",
+# ================================================================
+# AUTO-DETECTION ENGINE (Portfolio + Zacks)
+# ================================================================
+PORTFOLIO_FILE = None
+ZACKS_G1_FILE = None
+ZACKS_G2_FILE = None
+ZACKS_DD_FILE = None
 
-    # Last Price / Current Price
-    "Last Price": "Current Price",
-    "Price": "Current Price",
-    "Current Price": "Current Price",
+def auto_detect_files():
+    global PORTFOLIO_FILE, ZACKS_G1_FILE, ZACKS_G2_FILE, ZACKS_DD_FILE
+    files = os.listdir(DATA_PATH)
 
-    # Value
-    "Current Value": "Current Value",
-    "Market Value": "Current Value",
-    "Value": "Current Value",
+    # Portfolio
+    pf = [f for f in files if f.lower().startswith("portfolio_positions_") and f.endswith(".csv")]
+    if pf: PORTFOLIO_FILE = os.path.join(DATA_PATH, sorted(pf)[-1])
 
-    # Day Gain
-    "Today's Gain/Loss Dollar": "Day Gain",
-    "Day Gain": "Day Gain",
+    def find(prefix):
+        cands = [f for f in files if f.lower().startswith(prefix.lower())]
+        return os.path.join(DATA_PATH, sorted(cands)[-1]) if cands else None
 
-    # % Gain Today
-    "Today's Gain/Loss Percent": "Day Gain %",
+    ZACKS_G1_FILE = find("zacks_custom_screen_2025-") if files else None
+    ZACKS_G2_FILE = find("zacks_custom_screen_2025-") if files else None
+    ZACKS_DD_FILE = find("zacks_custom_screen_2025-") if files else None
 
-    # Total Gain %
-    "Total Gain/Loss Percent": "Gain/Loss %",
-    "Gain/Loss %": "Gain/Loss %",
+auto_detect_files()
 
-    # Total Gain $
-    "Total Gain/Loss Dollar": "Gain/Loss $",
-
-    # Cost Basis
-    "Cost Basis Total": "Cost Basis",
-    "Cost Basis": "Cost Basis",
-
-    # Average Cost
-    "Average Cost Basis": "Average Cost",
-    "Average Cost": "Average Cost",
-}
-
-
-def fidelity_auto_map(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Automatically renames Fidelity columns to Command Deck internal names.
-    Returns a DataFrame with consistent, predictable column names.
-    """
-
-    col_map = {}
-    for col in df.columns:
-        clean = col.strip()
-        if clean in FIDELITY_COLUMN_MAP:
-            col_map[col] = FIDELITY_COLUMN_MAP[clean]
-
-    df = df.rename(columns=col_map)
-
-    # Convert money-like values to floats
-    def scrub(x):
-        if pd.isna(x):
-            return np.nan
-        if isinstance(x, (int, float)):
-            return x
-        s = str(x).replace("$", "").replace(",", "").replace("%", "").strip()
-        neg = s.startswith("(") and s.endswith(")")
-        s = s.replace("(", "").replace(")", "")
-        try:
-            v = float(s)
-            return -v if neg else v
-        except:
-            return np.nan
-
-    numeric_cols = [
-        "Shares", "Current Price", "Current Value", "Gain/Loss %",
-        "Gain/Loss $", "Day Gain", "Cost Basis", "Average Cost"
-    ]
-
-    for c in numeric_cols:
-        if c in df.columns:
-            df[c] = df[c].apply(scrub)
-
-    # If Shares and Current Price exist, compute Value
-    if "Shares" in df.columns and "Current Price" in df.columns:
-        df["Current Value"] = df["Shares"] * df["Current Price"]
-
-    # Ensure Ticker exists
-    if "Ticker" not in df.columns:
-        # Try Symbol if needed
-        if "Symbol" in df.columns:
-            df["Ticker"] = df["Symbol"].astype(str)
-        else:
-            df["Ticker"] = "UNKNOWN"
-
-    return df
-
-
-# ----------------------------------------------------------------
-# FILE DISCOVERY ENGINE (AUTO-DETECT LATEST FILE)
-# ----------------------------------------------------------------
-def get_latest_file(keyword: str):
-    """
-    Find the latest CSV in /data that matches the keyword.
-    Ignores archive_ files completely.
-    """
-    files = [
-        f for f in os.listdir(DATA_PATH)
-        if keyword.lower() in f.lower()
-        and f.endswith(".csv")
-        and not f.lower().startswith("archive_")
-    ]
-    if not files:
-        return None
-    latest = max(files, key=lambda f:
-                 os.path.getmtime(os.path.join(DATA_PATH, f)))
-    return os.path.join(DATA_PATH, latest), latest
-
-
-# ----------------------------------------------------------------
-# UNIFIED CSV LOADER (NOW AUTO-MAPS FIDELITY)
-# ----------------------------------------------------------------
+# ================================================================
+# CSV LOADER
+# ================================================================
 @st.cache_data(show_spinner=False)
-def load_csv_auto(keyword: str) -> Tuple[pd.DataFrame, List[str]]:
-    """
-    Loads the most recent file matching keyword.
-    Also applies Fidelity column remapping.
-    """
-
-    messages = []
-    path_info = get_latest_file(keyword)
-
-    if not path_info:
-        return pd.DataFrame(), [f"No file found for keyword '{keyword}'"]
-
-    path, filename = path_info
-
+def load_csv(path):
+    if not path or not os.path.exists(path):
+        return pd.DataFrame(), [f"Missing file: {path}"]
     try:
         df = pd.read_csv(path, low_memory=False)
-        messages.append(f"Loaded latest: {filename}")
     except Exception as e:
-        return pd.DataFrame(), [f"Failed to load {filename}: {e}"]
+        return pd.DataFrame(), [f"Failed to read {path}: {e}"]
 
-    # Apply Fidelity → Command Deck mapping
-    df = fidelity_auto_map(df)
+    df.columns = [str(c).strip() for c in df.columns]
 
-    return df, messages
+    for c in df.columns:
+        if any(k in c.lower() for k in ["value","price","gain","loss","basis","shares","cost"]):
+            df[c] = df[c].apply(clean_numeric)
+
+    if "Current Value" not in df.columns and {"Shares","Current Price"}.issubset(df.columns):
+        df["Current Value"] = df["Shares"] * df["Current Price"]
+
+    return df, []
+
 # ================================================================
-# SECTION B — Data Load Engine / Sidebar / Portfolio Overview
+# LOAD ALL DATA
 # ================================================================
+portfolio_df, pmsg = load_csv(PORTFOLIO_FILE) if PORTFOLIO_FILE else (pd.DataFrame(), ["Missing portfolio data"])
+g1_df, _ = load_csv(ZACKS_G1_FILE) if ZACKS_G1_FILE else (pd.DataFrame(), [])
+g2_df, _ = load_csv(ZACKS_G2_FILE) if ZACKS_G2_FILE else (pd.DataFrame(), [])
+dd_df, _ = load_csv(ZACKS_DD_FILE) if ZACKS_DD_FILE else (pd.DataFrame(), [])
 
-# ----------------------------------------------------------------
-# LOAD ALL DATASETS (auto-detected & auto-mapped)
-# ----------------------------------------------------------------
-portfolio_df, pf_msg = load_csv_auto("Portfolio_Positions")
-g1_df, g1_msg = load_csv_auto("Growth 1")
-g2_df, g2_msg = load_csv_auto("Growth 2")
-dd_df, dd_msg = load_csv_auto("Defensive")
+all_z = pd.concat(
+    [
+        g1_df.assign(Source="Growth 1") if not g1_df.empty else None,
+        g2_df.assign(Source="Growth 2") if not g2_df.empty else None,
+        dd_df.assign(Source="Defensive Dividends") if not dd_df.empty else None,
+    ],
+    ignore_index=True
+).dropna(how="all", axis=1) if any([not g1_df.empty, not g2_df.empty, not dd_df.empty]) else pd.DataFrame()
 
-# ----------------------------------------------------------------
-# SIDEBAR — MANUAL CASH & TRAILING STOP CONTROL
-# ----------------------------------------------------------------
-st.sidebar.title("🧭 Command Deck v7.3R-4.5 — Fidelity Autopilot")
-st.sidebar.caption(f"Build Initialized | {datetime.now():%b %d %Y}")
+# ================================================================
+# SIDEBAR — Cash / Trailing
+# ================================================================
+st.sidebar.title("🧭 Command Deck — v7.4R")
+st.sidebar.caption("Enterprise Intelligence Engine")
 
 manual_cash = st.sidebar.number_input(
-    "💰 Manual Cash Override ($)",
-    min_value=0.0, step=100.0, value=0.0, format="%.2f",
-    help="Enter current Fidelity cash balance to override auto-detect."
+    "💰 Cash Available to Trade ($)",
+    min_value=0.0,
+    step=100.0,
+    value=0.0,
+    format="%.2f",
 )
-default_stop = st.sidebar.slider("Default Trailing Stop %", 1, 50, 10)
 
-st.sidebar.markdown("---")
-st.sidebar.write("### Diagnostics")
-for msg in pf_msg + g1_msg + g2_msg + dd_msg:
-    st.sidebar.text(msg)
+def_trail = st.sidebar.slider("Default Trailing Stop %", 1, 50, 12)
 
-# ----------------------------------------------------------------
-# MAIN HEADER
-# ----------------------------------------------------------------
+# ================================================================
+# MAIN TITLE
+# ================================================================
 st.title("🧭 Fox Valley Intelligence Engine — Enterprise Command Deck")
-st.caption("v7.3R-4.5 Fidelity Autopilot Edition | Portfolio + Zacks + Trend Engine Online")
+st.caption("v7.4R | Portfolio + Zacks + Tactical + Allocation + Evolution + Sector Intelligence")
 st.markdown("---")
 
-# ----------------------------------------------------------------
-# PORTFOLIO OVERVIEW / SUMMARY METRICS
-# ----------------------------------------------------------------
+# ================================================================
+# PORTFOLIO OVERVIEW
+# ================================================================
 st.subheader("📊 Portfolio Overview")
 
-if not portfolio_df.empty:
-    # detect value column
-    val_col = next((c for c in ["Current Value","Market Value","Value"] if c in portfolio_df.columns), None)
-    total_val = float(portfolio_df[val_col].sum()) if val_col else 0.0
-    cash_val = manual_cash
+val_col = next((c for c in ["Current Value", "Market Value", "Value"] if c in portfolio_df.columns), None)
+total_value = float(portfolio_df[val_col].sum()) if val_col else 0.0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Estimated Total Value", f"${total_val:,.2f}")
-    c2.metric("Cash Available to Trade", f"${cash_val:,.2f}")
+day_gain = pd.to_numeric(portfolio_df.get("Day Gain", pd.Series(dtype=float)), errors='coerce').sum()
+gl = pd.to_numeric(portfolio_df.get("Gain/Loss %", pd.Series(dtype=float)), errors='coerce')
+avg_gain = gl.mean() if not gl.empty else np.nan
 
-    day_gain = pd.to_numeric(portfolio_df.get("Day Gain", pd.Series(dtype=float)), errors='coerce')
-    c3.metric("Day Gain (sum)", f"${day_gain.sum():,.2f}" if not day_gain.empty else "—")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Estimated Total Value", money(total_value + manual_cash))
+c2.metric("Cash Available to Trade", money(manual_cash))
+c3.metric("Day Gain (sum)", money(day_gain))
+c4.metric("Avg Gain/Loss %", f"{avg_gain:.2f}%" if not pd.isna(avg_gain) else "—")
 
-    gl = pd.to_numeric(portfolio_df.get("Gain/Loss %", pd.Series(dtype=float)), errors='coerce')
-    c4.metric("Avg Gain/Loss %", f"{gl.mean():.2f}%" if not gl.empty else "—")
-
-    st.success(f"Portfolio Loaded Successfully — {len(portfolio_df)} Positions Detected")
-    st.dataframe(portfolio_df, use_container_width=True)
+if manual_cash == 0:
+    st.warning("Manual cash override is 0 — update sidebar for accuracy.")
 else:
-    st.error("Portfolio file missing or empty — upload Portfolio_Positions_*.csv to /data.")
-# ================================================================
-# SECTION C — Zacks Analyzer / Trend Comparator / Trailing Stops / Tactical Console
-# ================================================================
+    st.success(f"Manual cash override active: {money(manual_cash)}")
 
-# ----------------------------------------------------------------
-# ZACKS UNIFIED ANALYZER
-# ----------------------------------------------------------------
+st.dataframe(portfolio_df, use_container_width=True)
 st.markdown("---")
+
+# ================================================================
+# ZACKS UNIFIED ANALYZER
+# ================================================================
 st.subheader("🔎 Zacks Unified Analyzer — Top Candidates")
 
-def unify_zacks(g1, g2, dd):
-    frames=[]
-    for df,name in [(g1,"Growth 1"),(g2,"Growth 2"),(dd,"Defensive Dividend")]:
-        if not df.empty:
-            d=df.copy()
-            d["Source"]=name
-            frames.append(d)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+if not all_z.empty:
+    if "Zacks Rank" in all_z.columns:
+        all_z["Zacks Rank"] = pd.to_numeric(all_z["Zacks Rank"], errors='coerce')
 
-unified = unify_zacks(g1_df, g2_df, dd_df)
-
-if not unified.empty:
-    if "Zacks Rank" in unified.columns:
-        unified["Zacks Rank"] = pd.to_numeric(unified["Zacks Rank"], errors='coerce')
-
-    sort_cols = [c for c in ["Zacks Rank","PEG","PE"] if c in unified.columns]
+    sort_cols = [c for c in ["Zacks Rank","PEG","PE"] if c in all_z.columns]
     if sort_cols:
-        unified = unified.sort_values(by=sort_cols, ascending=True)
+        all_z = all_z.sort_values(by=sort_cols, ascending=True)
 
-    top_n = st.slider("Top-N Candidates", 4, 30, 15)
-    st.dataframe(unified.head(top_n), use_container_width=True)
+    top_n = st.slider("Top-N Candidates", 4, 30, 8)
+    st.dataframe(all_z.head(top_n), use_container_width=True)
 
-    tickers = ", ".join(sorted(set(unified.head(top_n)["Ticker"].astype(str))))
-    st.code(tickers, language="text")
+    tickers = ", ".join(sorted(all_z.head(top_n)["Ticker"].astype(str)))
+    st.code(tickers)
 else:
-    st.warning("No Zacks files found in /data")
+    st.warning("No Zacks data available.")
 
-# ----------------------------------------------------------------
-# ZACKS TREND COMPARATOR (Last 5 Uploads)
-# ----------------------------------------------------------------
 st.markdown("---")
-st.subheader("📈 Zacks Trend Comparator — Last 5 Uploads")
 
-def zacks_trend(category: str):
-    files = sorted(
-        [
-            f for f in os.listdir(DATA_PATH)
-            if category.lower() in f.lower()
-            and f.endswith(".csv")
-            and not f.lower().startswith("archive_")
-        ],
-        key=lambda x: os.path.getmtime(os.path.join(DATA_PATH, x)),
-        reverse=True
-    )[:5]
+# ================================================================
+# TACTICAL ENGINE
+# ================================================================
+if "tactical_log" not in st.session_state:
+    st.session_state.tactical_log = []
 
-    if len(files) < 2:
-        return None
+def log_tactical_action(action, ticker, qty=None, pct=None, notes=""):
+    st.session_state.tactical_log.append({
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "ticker": ticker,
+        "quantity": qty,
+        "percent": pct,
+        "notes": notes,
+    })
 
-    latest = pd.read_csv(os.path.join(DATA_PATH, files[0]))
-    prev = pd.read_csv(os.path.join(DATA_PATH, files[1]))
+def display_tactical_log():
+    st.subheader("📘 Tactical Log")
+    if not st.session_state.tactical_log:
+        st.info("No tactical actions recorded.")
+        return
+    for e in st.session_state.tactical_log:
+        st.markdown(f"**[{e['timestamp']}]** — `{e['action']}` **{e['ticker']}**")
+        if e['quantity']: st.write(f"Shares: {e['quantity']}")
+        if e['percent']: st.write(f"Trim %: {e['percent']}%")
+        if e['notes']: st.write(f"Notes: {e['notes']}")
+        st.markdown("---")
 
-    if "Ticker" not in latest.columns:
-        latest = fidelity_auto_map(latest)
-    if "Ticker" not in prev.columns:
-        prev = fidelity_auto_map(prev)
+st.header("🎯 Tactical Operations Center — v7.4R")
 
-    return {
-        "latest": files[0],
-        "previous": files[1],
-        "new": list(set(latest["Ticker"]) - set(prev["Ticker"])),
-        "dropped": list(set(prev["Ticker"]) - set(latest["Ticker"]))
-    }
+col1, col2, col3 = st.columns([2,2,3])
+with col1:
+    action = st.selectbox("Action", ["BUY","SELL","HOLD","TRIM"])
+    ticker = st.text_input("Ticker")
+with col2:
+    qty = st.number_input("Shares", min_value=0)
+    trim_pct = st.slider("Trim %", 1, 50, 10)
+with col3:
+    notes = st.text_area("Execution Notes")
+    if st.button("Log Action", use_container_width=True):
+        log_tactical_action(action, ticker, qty if qty>0 else None, trim_pct if action=="TRIM" else None, notes)
+        st.success(f"Logged {action} for {ticker}")
 
-for cat in ["Growth 1","Growth 2","Defensive"]:
-    tr = zacks_trend(cat)
-    if tr:
-        st.markdown(f"**{cat} — {tr['latest']} vs {tr['previous']}**")
-        st.write("🟢 New:", tr["new"][:10])
-        st.write("🔻 Dropped:", tr["dropped"][:10])
-    else:
-        st.info(f"{cat}: Not enough files for trend comparison.")
-
-# ----------------------------------------------------------------
-# TRAILING STOP MONITOR
-# ----------------------------------------------------------------
+display_tactical_log()
 st.markdown("---")
-st.subheader("🛡️ Trailing Stop Monitor")
 
-if not portfolio_df.empty and {"Ticker","Current Price"}.issubset(portfolio_df.columns):
-    tdf = portfolio_df[["Ticker","Current Price","Current Value"]].copy()
-    tdf["Trailing %"] = default_stop
-    tdf["Stop Price"] = tdf["Current Price"] * (1 - tdf["Trailing %"] / 100)
+# ================================================================
+# ALLOCATION ENGINE
+# ================================================================
+ALLOCATION_MAP = {
+    "NVDA": "Growth", "AMZN": "Growth", "COMM": "Growth", "RDDT": "Growth", "NBIX": "Growth",
+    "NEM": "Defensive", "ALL": "Defensive", "HSBC": "Defensive", "PRK": "Defensive", "NVT": "Defensive",
+    "AU": "Core", "IBKR": "Core", "CNQ": "Core", "TPC": "Core", "NTB": "Core",
+    "LCII": "Core", "CUBI": "Core", "CALX": "Core", "KAR": "Core",
+}
 
-    st.dataframe(tdf, use_container_width=True)
-    csv_buf = io.StringIO()
-    tdf.to_csv(csv_buf, index=False)
-    st.download_button(
-        "⬇️ Download Trailing Stops CSV",
-        csv_buf.getvalue(),
-        "trailing_stops_v73R45.csv",
-        mime="text/csv"
+def apply_allocation(df):
+    if df.empty: return df
+    df = df.copy()
+    df["Category"] = df["Ticker"].apply(lambda x: ALLOCATION_MAP.get(str(x).upper(),"Unassigned"))
+    return df
+
+def calculate_allocation(df):
+    if df.empty or "Current Value" not in df.columns:
+        return df, {}
+    total = df["Current Value"].sum()
+    if total <= 0: return df, {}
+    df["Allocation %"] = df["Current Value"] / total * 100
+    cat = (df.groupby("Category")["Current Value"].sum() / total * 100).to_dict()
+    return df, cat
+
+st.header("📊 Allocation System — v7.4R")
+
+alloc_df = apply_allocation(portfolio_df)
+alloc_df, alloc_weights = calculate_allocation(alloc_df)
+
+st.dataframe(
+    alloc_df[[c for c in ["Ticker","Description","Current Value","Category","Allocation %"] if c in alloc_df.columns]],
+    use_container_width=True
+)
+
+st.subheader("📡 Category Exposure (%)")
+if alloc_weights:
+    for cat, pct in alloc_weights.items():
+        st.write(f"**{cat}: {pct:.2f}%**")
+else:
+    st.info("No category data available.")
+
+st.markdown("---")
+
+# ================================================================
+# PERFORMANCE HEATMAP
+# ================================================================
+st.header("🔥 Performance Heatmap — v7.4R")
+
+def make_heatmap(df):
+    if df.empty or "Gain/Loss %" not in df.columns:
+        st.info("Insufficient data for heatmap.")
+        return
+    df = df.copy()
+    df["Gain/Loss %"] = pd.to_numeric(df["Gain/Loss %"], errors='coerce')
+    df = df[df["Gain/Loss %"].notna()]
+    if df.empty:
+        st.warning("No numerical gain/loss data available.")
+        return
+    chart = alt.Chart(df).mark_rect().encode(
+        x=alt.X("Ticker:N"),
+        y=alt.Y("Category:N"),
+        color=alt.Color("Gain/Loss %:Q", scale=alt.Scale(scheme="redyellowgreen")),
+        tooltip=["Ticker","Category","Gain/Loss %","Current Value"]
     )
-else:
-    st.info("Portfolio missing Ticker or Current Price columns — cannot calculate trailing stops.")
+    st.altair_chart(chart, use_container_width=True)
 
-# ----------------------------------------------------------------
-# TACTICAL CONSOLE — BUY / SELL / HOLD / TRIM
-# ----------------------------------------------------------------
+make_heatmap(alloc_df)
 st.markdown("---")
-st.subheader("🎯 Tactical Console — Buy / Sell / Hold / Trim")
 
-ca, cb, cc, cd = st.columns(4)
-
-with ca:
-    buy_ticker = st.text_input("Buy Ticker")
-    buy_shares = st.number_input("Buy Shares", min_value=0, step=1)
-    st.button("Queue BUY", use_container_width=True)
-
-with cb:
-    sell_ticker = st.text_input("Sell Ticker")
-    sell_shares = st.number_input("Sell Shares", min_value=0, step=1)
-    st.button("Queue SELL", use_container_width=True)
-
-with cc:
-    hold_note = st.text_area("Hold Note")
-    st.button("Log HOLD", use_container_width=True)
-
-with cd:
-    trim_ticker = st.text_input("Trim Ticker")
-    trim_percent = st.slider("Trim %", 1, 50, 10)
-    st.button("Queue TRIM", use_container_width=True)
-
-st.caption("Interface only — no brokerage connectivity.")
 # ================================================================
-# SECTION D — Performance Summary / Export Hub / Diagnostics Footer
+# ZACKS EVOLUTION ENGINE
 # ================================================================
+st.header("📈 Zacks Evolution Engine — v7.4R")
 
-# ----------------------------------------------------------------
-# PERFORMANCE SUMMARY
-# ----------------------------------------------------------------
-st.markdown("---")
-st.subheader("📈 Performance Summary")
+def load_all_zfiles():
+    return sorted([f for f in os.listdir(DATA_PATH) if f.lower().startswith("zacks_custom_screen_")])
 
-if not portfolio_df.empty:
-    # Select key columns safely
-    cols = [c for c in [
-        "Ticker","Description","Shares","Cost Basis","Average Cost",
-        "Current Price","Current Value","Gain/Loss $","Gain/Loss %","Day Gain"
-    ] if c in portfolio_df.columns]
+def compare_two(latest, prev):
+    try:
+        ldf = pd.read_csv(os.path.join(DATA_PATH, latest))
+        pdf = pd.read_csv(os.path.join(DATA_PATH, prev))
+    except:
+        return [], []
+    lset = set(ldf["Ticker"].astype(str))
+    pset = set(pdf["Ticker"].astype(str))
+    return sorted(lset - pset), sorted(pset - lset)
 
-    if cols:
-        pf = portfolio_df[cols].copy()
+zfiles = load_all_zfiles()
 
-        # Calculate missing gain columns if needed
-        if {"Shares","Cost Basis","Current Price"}.issubset(pf.columns):
-            pf["Gain $"] = (pf["Current Price"] - pf["Average Cost"]) * pf["Shares"]
-            pf["Gain/Loss %"] = (
-                (pf["Current Price"] - pf["Average Cost"]) / pf["Average Cost"]
-            ) * 100
-
-        st.dataframe(pf, use_container_width=True)
-    else:
-        st.info("Required columns missing for performance summary.")
+if len(zfiles) < 2:
+    st.info("Not enough Zacks files for comparison.")
 else:
-    st.warning("Portfolio not loaded — performance summary unavailable.")
+    latest = zfiles[-1]
+    prev = zfiles[-2]
+    st.write(f"Comparing `{latest}` vs `{prev}`")
+    new, dropped = compare_two(latest, prev)
+    st.subheader("🟢 New")
+    st.write(new if new else "None")
+    st.subheader("🔻 Dropped")
+    st.write(dropped if dropped else "None")
 
-# ----------------------------------------------------------------
-# EXPORT HUB — Unified ZIP Bundle
-# ----------------------------------------------------------------
 st.markdown("---")
-st.subheader("📤 Export Unified Data Bundle (.zip)")
 
-def create_data_bundle():
+# ================================================================
+# SECTOR EXPOSURE MAP v1.0
+# ================================================================
+st.header("🏛 Sector Exposure Map — v7.4R")
+
+SECTOR_MAP = {
+    "NVDA": "Technology", "AMZN": "Consumer Discretionary", "COMM": "Communication",
+    "RDDT": "Communication", "NBIX": "Healthcare", "NEM": "Materials", "ALL": "Financials",
+    "HSBC": "Financials", "PRK": "Financials", "NVT": "Industrials", "AU": "Materials",
+    "IBKR": "Financials", "CNQ": "Energy", "TPC": "Industrials", "NTB": "Financials",
+    "LCII": "Consumer Discretionary", "CUBI": "Financials", "CALX": "Technology",
+    "KAR": "Consumer Discretionary",
+}
+
+def apply_sector(df):
+    if df.empty: return df
+    df = df.copy()
+    df["Sector"] = df["Ticker"].apply(lambda x: SECTOR_MAP.get(str(x).upper(),"Unassigned"))
+    return df
+
+sec_df = apply_sector(portfolio_df)
+
+if "Current Value" in sec_df.columns and sec_df["Current Value"].sum() > 0:
+    st.subheader("📡 Sector Allocation (%)")
+    s = (sec_df.groupby("Sector")["Current Value"].sum() / sec_df["Current Value"].sum() * 100).sort_values(ascending=False)
+    for sec, p in s.items():
+        st.write(f"**{sec}: {p:.2f}%**")
+
+chart = alt.Chart(sec_df).mark_bar().encode(
+    x=alt.X("Sector:N"),
+    y=alt.Y("Current Value:Q"),
+    tooltip=["Sector","Current Value","Ticker"]
+)
+st.altair_chart(chart, use_container_width=True)
+
+heat = alt.Chart(sec_df).mark_rect().encode(
+    x=alt.X("Ticker:N"),
+    y=alt.Y("Sector:N"),
+    color=alt.Color("Current Value:Q", scale=alt.Scale(scheme="blues")),
+    tooltip=["Ticker","Sector","Current Value"]
+)
+st.altair_chart(heat, use_container_width=True)
+
+st.markdown("---")
+
+# ================================================================
+# EXPORT ENGINE
+# ================================================================
+st.header("📤 Export Unified Data Bundle (.zip)")
+
+def export_bundle():
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in os.listdir(DATA_PATH):
-            if f.endswith(".csv") and not f.lower().startswith("archive_"):
-                zf.write(os.path.join(DATA_PATH, f), arcname=f)
-    buf.seek(0)
-    return buf
+    with zipfile.ZipFile(buf, "w") as z:
+        if PORTFOLIO_FILE: z.write(PORTFOLIO_FILE, os.path.basename(PORTFOLIO_FILE))
+        for f in [ZACKS_G1_FILE, ZACKS_G2_FILE, ZACKS_DD_FILE]:
+            if f: z.write(f, os.path.basename(f))
 
-if st.button("Generate Data Bundle"):
-    z = create_data_bundle()
-    st.download_button(
-        "⬇️ Download Data_Bundle.zip",
-        data=z,
-        file_name=f"FoxValley_Data_{datetime.now():%Y%m%d}.zip",
-        mime="application/zip"
-    )
-    st.success("Bundle ready for download.")
+        tbuf = io.StringIO()
+        w = csv.writer(tbuf)
+        w.writerow(["timestamp","action","ticker","quantity","percent","notes"])
+        for e in st.session_state.tactical_log:
+            w.writerow([e["timestamp"],e["action"],e["ticker"],e["quantity"],e["percent"],e["notes"]])
+        z.writestr("tactical_log.csv", tbuf.getvalue())
 
-# ----------------------------------------------------------------
-# SYSTEM FOOTER / DIAGNOSTICS
-# ----------------------------------------------------------------
+    return buf.getvalue()
+
+st.download_button("Download Bundle", export_bundle(), "fvie_export_v74R.zip")
+
+# ================================================================
+# FOOTER
+# ================================================================
 st.markdown("---")
-st.caption(f"""
-🧭 Fox Valley Command Deck v7.3R-4.5 — Fidelity Autopilot Edition  
-Build Time: {datetime.now():%Y-%m-%d %H:%M:%S}  
-© CaptPicard + #1 — Fox Valley Intelligence Engine
-""")
+st.caption(f"🧭 Command Deck v7.4R — Build Time: {datetime.now():%Y-%m-%d %H:%M:%S} | Enterprise Integration Complete")
