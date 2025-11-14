@@ -369,9 +369,13 @@ portfolio_df, portfolio_filename = load_portfolio()
 if portfolio_df is not None:
     portfolio_df = portfolio_df.replace(r'[\$,()]', '', regex=True).replace(r'\((.*?)\)', r'-\1', regex=True)
     portfolio_df = portfolio_df.apply(lambda col: pd.to_numeric(col, errors='ignore'))
+    
+    # --- Align CSV column names with dashboard expectations ---
+    portfolio_df = portfolio_df.rename(columns={"Symbol": "Ticker"})
 
 # Calculate core metrics
 total_value, cash_value, avg_gain = compute_portfolio_metrics(portfolio_df)
+
 
 # Override cash if user uses manual override
 available_cash = manual_cash if manual_cash > 0 else cash_value
