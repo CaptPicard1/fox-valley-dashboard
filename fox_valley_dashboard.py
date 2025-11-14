@@ -1,13 +1,14 @@
-# ================================================
 # 🧭 FOX VALLEY INTELLIGENCE ENGINE — COMMAND DECK
-# v7.3R-4.x  |  Segment 1A Source Transmission
-# ================================================
+# v7.3R-4.6 — Stable Unified Build
 
 import os
 import pandas as pd
 import numpy as np
 import streamlit as st
 from datetime import datetime, timedelta
+import plotly.express as px
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 # ------------------------------------------------
 # STREAMLIT CONFIGURATION
@@ -31,22 +32,15 @@ VALID_SCREEN_TYPES = ["Growth1", "Growth2", "DefensiveDividend"]
 # ------------------------------------------------
 CUSTOM_CSS = """
 <style>
-/* Universal font */
 html, body, [class*="css"]  {
     font-family: 'Segoe UI', sans-serif;
 }
-
-/* Headline styling */
 h1, h2, h3 {
     font-weight: 700;
 }
-
-/* Highlight Zacks #1 rank rows */
 .highlight-rank-1 {
     background-color: #ffeb3b33 !important;
 }
-
-/* Card-like containers */
 .dashboard-card {
     padding: 18px;
     background-color: #f8f9fa;
@@ -54,32 +48,23 @@ h1, h2, h3 {
     border: 1px solid #ddd;
     margin-bottom: 12px;
 }
-
-/* Sidebar styling */
 .sidebar-section {
     padding: 14px;
     margin-bottom: 16px;
     background: #f0f2f6;
     border-radius: 10px;
 }
-
-/* Table styling */
 .dataframe tbody tr:hover {
     background-color: #e6f7ff !important;
 }
 </style>
 """
-
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ------------------------------------------------
-# UTILITY — LOAD LATEST FILE MATCHING PATTERN
+# FILE LOADERS
 # ------------------------------------------------
 def load_latest_file(pattern, directory=DATA_DIR):
-    """
-    Returns the most recent file in the data/ directory
-    matching the supplied pattern.
-    """
     try:
         files = [
             f for f in os.listdir(directory)
@@ -95,21 +80,16 @@ def load_latest_file(pattern, directory=DATA_DIR):
         )
         latest = files_sorted[0]
         full_path = os.path.join(directory, latest)
-
         df = pd.read_csv(full_path)
         return df, latest
-
     except Exception as e:
         st.error(f"[ERROR] Could not load dataset for pattern {pattern}: {e}")
         return None, None
 
-# ------------------------------------------------
-# LOAD PORTFOLIO POSITIONS
-# ------------------------------------------------
+
 def load_portfolio():
     """
-    Loads the most recent portfolio CSV in the form:
-    Portfolio_Positions_XXXX.csv
+    Load the most recent Portfolio_Positions_*.csv from /data.
     """
     df, filename = load_latest_file(PORTFOLIO_FILE_PATTERN)
     if df is None:
@@ -117,79 +97,194 @@ def load_portfolio():
         return None, None
     return df, filename
 
-# ------------------------------------------------
-# LOAD ZACKS SCREENS (G1, G2, DEF)
-# ------------------------------------------------
-def load_zacks_screen(screen_type):
-    """
-    screen_type: Growth1, Growth2, DefensiveDividend
-    Returns the newest Zacks screen file of that type.
-    """
-    pattern = f"{ZACKS_PREFIX}_"
-    df, filename = load_latest_file(pattern)
 
+def load_zacks_files_auto(directory=DATA_DIR):
+    """
+    Scan /data for zacks_custom_screen_YYYY-MM-DD <Type>.csv
+    and return dict: { 'Growth1': (df, filename), ... } for the latest date.
+    """
+    import re
+
+    files = [
+        f for f in os.listdir(directory)
+        if f.startswith(ZACKS_PREFIX)
+        and f.endswith(".csv")
+        and "archive" not in f.lower()
+    ]
+
+    if not files:
+        return {}
+
+    date_pattern = r"zacks_custom_screen_(\d{4}-\d{2}-\d{2})"
+    date_map = {}
+
+    for f in files:
+        m = re.search(date_pattern, f)
+        if not m:
+            continue
+        d = m.group(1)
+        date_map.setdefault(d, []).append(f)
+
+    if not date_map:
+        return {}
+
+    newest = sorted(date_map.keys())[-1]
+    todays_files = date_map[newest]
+
+    out = {}
+    for f in todays_files:
+        lower = f.lower()
+        full = os.path.join(directory, f)
+
+        if "growth 1" in lower:
+            key = "Growth1"
+        elif "growth 2" in lower:
+            key = "Growth2"
+        elif "defensive" in lower or "dividends" in lower:
+            key = "DefensiveDividend"
+        else:
+            continue
+
+        out[key] = (pd.read_csv(full), f)
+
+    return out
+
+# ------------------------------------------------
+# ZACKS PREP & SCORING
+# ------------------------------------------------
+def prepare_screen(df, label):
     if df is None:
-        return None, None
+        return None
+    out = df.copy()
+    out.columns = [c.strip() for c in out.columns]
+    out["Source"] = label
+    return out
 
-    # Filter by type if multiple exist in filename
-    if screen_type.lower() not in filename.lower():
-        # If multiple files exist, pick filtered manually
-        candidates = [
-            f for f in os.listdir(DATA_DIR)
-            if screen_type.lower() in f.lower()
-            and f.endswith(".csv")
-        ]
-        if candidates:
-            latest = sorted(
-                candidates,
-                key=lambda x: os.path.getmtime(os.path.join(DATA_DIR, x)),
-                reverse=True
-            )[0]
-            df = pd.read_csv(os.path.join(DATA_DIR, latest))
-            filename = latest
 
-    return df, filename
+def merge_zacks_screens(auto_dict):
+    prepared = []
+    for label in VALID_SCREEN_TYPES:
+        item = auto_dict.get(label)
+        if not item:
+            continue
+        df, _fn = item
+        p = prepare_screen(df, label)
+        if p is not None:
+            prepared.append(p)
+
+    if not prepared:
+        return pd.DataFrame()
+
+    return pd.concat(prepared, ignore_index=True)
+
+
+def score_zacks_candidates(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    scored = df.copy()
+
+    # Zacks Rank → lower is better
+    if "Zacks Rank" in scored.columns:
+        scored["RankScore"] = (
+            scored["Zacks Rank"].astype(str).str.extract(r"(\d)").astype(float)
+        )
+    else:
+        scored["RankScore"] = 5.0
+
+    # Momentum proxy
+    if "Price Change %" in scored.columns:
+        scored["Momentum"] = pd.to_numeric(
+            scored["Price Change %"], errors="coerce"
+        ).fillna(0.0)
+    else:
+        scored["Momentum"] = 0.0
+
+    # Market cap proxy
+    if "Market Cap" in scored.columns:
+        scored["SizeScore"] = pd.to_numeric(
+            scored["Market Cap"], errors="coerce"
+        ).fillna(0.0)
+    else:
+        scored["SizeScore"] = 0.0
+
+    def source_weight(src):
+        if src == "Growth1":
+            return 1.15
+        if src == "Growth2":
+            return 1.10
+        if src == "DefensiveDividend":
+            return 1.05
+        return 1.0
+
+    scored["SourceWeight"] = scored["Source"].apply(source_weight)
+
+    scored["CompositeScore"] = (
+        (6 - scored["RankScore"]) * 5
+        + scored["Momentum"] * 0.2
+        + scored["SizeScore"] * 0.00001
+    ) * scored["SourceWeight"]
+
+    return scored.sort_values("CompositeScore", ascending=False)
+
+
+def get_top_n(df, n):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df.head(n)
 
 # ------------------------------------------------
-# CALCULATE PORTFOLIO METRICS
+# PORTFOLIO METRICS
 # ------------------------------------------------
 def compute_portfolio_metrics(df):
     """
-    Computes account value, cash, average gain, etc.
-    Assumes columns:
-    - 'Current Value'
-    - 'Gain/Loss $'
-    - 'Gain/Loss %'
-    - 'Ticker'
+    Compute total account value, cash value, and average gain.
+    Compatible with Fidelity export columns.
     """
     if df is None or df.empty:
-        return 0, 0, 0
+        return 0.0, 0.0, None
 
     try:
-        total_value = df["Current Value"].sum()
-        avg_gain = df["Gain/Loss %"].mean()
+        total_value = pd.to_numeric(
+            df["Current Value"], errors="coerce"
+        ).fillna(0).sum()
 
-        cash_row = df[df["Ticker"].str.lower() == "cash"]
-        cash_value = cash_row["Current Value"].sum() if not cash_row.empty else 0
+        # Gain % column fallback
+        gain_col = None
+        for cand in ["Gain/Loss %", "Total Gain/Loss Percent", "Today's Gain/Loss Percent"]:
+            if cand in df.columns:
+                gain_col = cand
+                break
+
+        if gain_col:
+            avg_gain = pd.to_numeric(
+                df[gain_col], errors="coerce"
+            ).replace([np.inf, -np.inf], np.nan).dropna().mean()
+        else:
+            avg_gain = None
+
+        cash_value = 0.0
+        if "Ticker" in df.columns:
+            cash_rows = df[df["Ticker"].astype(str).str.lower().eq("cash")]
+            if not cash_rows.empty:
+                cash_value = pd.to_numeric(
+                    cash_rows["Current Value"], errors="coerce"
+                ).fillna(0).sum()
 
         return total_value, cash_value, avg_gain
-    except:
-        return 0, 0, 0
+    except Exception:
+        return 0.0, 0.0, None
 
 # ------------------------------------------------
-# HIGHLIGHT ZACKS RANK = 1
+# ZACKS RANK HIGHLIGHT
 # ------------------------------------------------
 def highlight_rank_1(row):
     try:
         if "Zacks Rank" in row and str(row["Zacks Rank"]).strip() == "1":
             return ['background-color: #ffeb3b33'] * len(row)
-    except:
+    except Exception:
         pass
     return [''] * len(row)
-# ================================================
-# SEGMENT 1B — COMMAND DECK CORE INTERFACE LAYER
-# v7.3R-4.x
-# ================================================
 
 # ------------------------------------------------
 # SIDEBAR — CONTROL PANEL
@@ -197,39 +292,41 @@ def highlight_rank_1(row):
 with st.sidebar:
     st.markdown("## 🧭 Command Deck Controls")
 
-    # Manual cash override
     st.markdown("#### Manual Cash Override ($)")
     manual_cash = st.number_input(
         "Enter Cash Available to Trade",
-        min_value=0.0, value=0.0, step=100.0,
-        key="manual_cash_override"
+        min_value=0.0,
+        value=0.0,
+        step=100.0,
+        key="manual_cash_override",
     )
 
     st.markdown("---")
 
-    # Default trailing stop % for entire deck
     st.markdown("#### Default Trailing Stop %")
     default_trailing_stop = st.number_input(
         "Trailing Stop (%)",
-        min_value=0.0, max_value=50.0,
-        value=1.0, step=0.5,
-        key="default_trailing_stop"
+        min_value=0.0,
+        max_value=50.0,
+        value=1.0,
+        step=0.5,
+        key="default_trailing_stop",
     )
 
     st.markdown("---")
 
-    # Top-N Zacks analyzer
     st.markdown("#### Zacks Unified Analyzer")
     top_n = st.number_input(
         "Top-N Candidates",
-        min_value=1, max_value=50,
-        value=8, step=1,
-        key="top_n_candidates"
+        min_value=1,
+        max_value=50,
+        value=8,
+        step=1,
+        key="top_n_candidates",
     )
 
     st.markdown("---")
 
-    # Tactical Buy/Sell/Trim interface
     st.markdown("#### 🎯 Tactical Controls")
     buy_ticker = st.text_input("Buy Ticker")
     buy_shares = st.number_input("Buy Shares", min_value=0, step=1)
@@ -238,158 +335,46 @@ with st.sidebar:
     sell_shares = st.number_input("Sell Shares", min_value=0, step=1)
 
 # ------------------------------------------------
-# UNIFIED ZACKS INGESTION LAYER
-# ------------------------------------------------
-def load_all_zacks_screens():
-    """
-    Returns dict with keys Growth1, Growth2, DefensiveDividend
-    Each entry: (DataFrame, filename)
-    """
-    screens = {}
-    for sctype in VALID_SCREEN_TYPES:
-        df, fn = load_zacks_screen(sctype)
-        screens[sctype] = {"df": df, "file": fn}
-    return screens
-
-all_screens = load_all_zacks_screens()
-
-# ------------------------------------------------
-# ZACKS — CLEAN AND MERGE
-# ------------------------------------------------
-def prepare_screen(df, label):
-    """Normalizes columns and tags with source."""
-    if df is None:
-        return None
-    out = df.copy()
-    out.columns = [c.strip() for c in out.columns]
-    out["Source"] = label
-    return out
-
-def merge_all_screens():
-    """Combined Zacks (G1 + G2 + DEF) into one unified DataFrame."""
-    prepared = []
-    for sc in VALID_SCREEN_TYPES:
-        entry = all_screens[sc]
-        if entry["df"] is not None:
-            prepared.append(prepare_screen(entry["df"], sc))
-    if not prepared:
-        return pd.DataFrame()
-    return pd.concat(prepared, ignore_index=True)
-
-zacks_unified = merge_all_screens()
-
-# ------------------------------------------------
-# SCORING ENGINE — BASELINE
-# ------------------------------------------------
-def score_zacks_candidates(df):
-    """
-    Scoring foundation for Zacks Top-N engine.
-    Uses:
-    - Zacks Rank
-    - Price Momentum (if provided)
-    - Market Cap
-    - Source weighting (G1, G2, DEF)
-    """
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    scored = df.copy()
-
-    # Convert rank
-    if "Zacks Rank" in scored.columns:
-        scored["RankScore"] = scored["Zacks Rank"].astype(str).str.extract("(\d)").astype(float)
-    else:
-        scored["RankScore"] = 5.0
-
-    # Price momentum surrogate
-    if "Price Change %" in scored.columns:
-        scored["Momentum"] = scored["Price Change %"].astype(float)
-    else:
-        scored["Momentum"] = 0
-
-    # Market Cap handling
-    if "Market Cap" in scored.columns:
-        scored["SizeScore"] = scored["Market Cap"].astype(float)
-    else:
-        scored["SizeScore"] = 0
-
-    # Source weighting
-    def source_weight(src):
-        if src == "Growth1": return 1.15
-        if src == "Growth2": return 1.10
-        if src == "DefensiveDividend": return 1.05
-        return 1.0
-
-    scored["SourceWeight"] = scored["Source"].apply(source_weight)
-
-    # Composite scoring formula
-    scored["CompositeScore"] = (
-        (6 - scored["RankScore"]) * 5 +
-        scored["Momentum"] * 0.2 +
-        scored["SizeScore"] * 0.00001
-    ) * scored["SourceWeight"]
-
-    return scored.sort_values("CompositeScore", ascending=False)
-
-scored_candidates = score_zacks_candidates(zacks_unified)
-
-# ------------------------------------------------
-# TOP-N EXTRACTOR
-# ------------------------------------------------
-def get_top_n(df, n):
-    if df is None or df.empty:
-        return pd.DataFrame()
-    return df.head(n)
-
-top_n_df = get_top_n(scored_candidates, top_n)
-
-# ------------------------------------------------
-# TABLE UTILITY
-# ------------------------------------------------
-def render_table(df, label=None, highlight=False):
-    if df is None or df.empty:
-        st.warning(f"No data found for {label}")
-        return
-
-    if highlight:
-        st.dataframe(df.style.apply(highlight_rank_1, axis=1))
-    else:
-        st.dataframe(df)
-# ================================================
-# SEGMENT 1C — MAIN COMMAND DECK LAYOUT
-# v7.3R-4.x
-# ================================================
-
-# ------------------------------------------------
-# LOAD PORTFOLIO
+# LOAD DATA — PORTFOLIO + ZACKS
 # ------------------------------------------------
 portfolio_df, portfolio_filename = load_portfolio()
 
-# --- CLEAN NUMERIC COLUMNS (Fidelity CSV) ---
+# Clean Fidelity export numerics + normalize symbol column
 if portfolio_df is not None:
-    portfolio_df = portfolio_df.replace(r'[\$,()]', '', regex=True).replace(r'\((.*?)\)', r'-\1', regex=True)
-    portfolio_df = portfolio_df.apply(lambda col: pd.to_numeric(col, errors='ignore'))
-    
-    # --- Align CSV column names with dashboard expectations ---
-    portfolio_df = portfolio_df.rename(columns={"Symbol": "Ticker"})
+    portfolio_df = (
+        portfolio_df
+        .replace(r"\((.*?)\)", r"-\1", regex=True)
+        .replace(r"[\$,]", "", regex=True)
+    )
+    portfolio_df = portfolio_df.apply(lambda col: pd.to_numeric(col, errors="ignore"))
 
-# Calculate core metrics
+    if "Symbol" in portfolio_df.columns:
+        portfolio_df = portfolio_df.rename(columns={"Symbol": "Ticker"})
+
+# Zacks auto-ingestion
+zacks_files = load_zacks_files_auto()
+zacks_unified = merge_zacks_screens(zacks_files)
+scored_candidates = score_zacks_candidates(zacks_unified)
+top_n_df = get_top_n(scored_candidates, top_n)
+
+# ------------------------------------------------
+# CORE METRICS
+# ------------------------------------------------
 total_value, cash_value, avg_gain = compute_portfolio_metrics(portfolio_df)
-
-
-# Override cash if user uses manual override
 available_cash = manual_cash if manual_cash > 0 else cash_value
 
 # ------------------------------------------------
-# PAGE TITLE
+# PAGE HEADER
 # ------------------------------------------------
-st.markdown(f"""
+st.markdown(
+    """
 # 🧭 Fox Valley Intelligence Engine — Enterprise Command Deck  
-**v7.3R-4.x** | Real-Time Diagnostics Online  
-""")
+**v7.3R-4.6** | Real-Time Diagnostics Online  
+"""
+)
 
 # ------------------------------------------------
-# PORTFOLIO OVERVIEW CARDS
+# OVERVIEW METRIC CARDS
 # ------------------------------------------------
 colA, colB, colC = st.columns(3)
 
@@ -408,14 +393,14 @@ with colB:
 with colC:
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
     st.markdown("### **Avg Gain/Loss %**")
-    if avg_gain:
+    if avg_gain is not None:
         st.markdown(f"## {avg_gain:.2f}%")
     else:
         st.markdown("## —")
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ------------------------------------------------
-# DIAGNOSTICS
+# DIAGNOSTICS PANEL
 # ------------------------------------------------
 st.markdown("## ⚙️ Diagnostics Console")
 
@@ -427,37 +412,47 @@ else:
 if portfolio_filename:
     st.caption(f"Active Portfolio File: **{portfolio_filename}**")
 
+if not zacks_files:
+    st.warning("No Zacks screen files detected in /data for latest date.")
+else:
+    # show the date used (grab from any filename)
+    any_file = list(zacks_files.values())[0][1]
+    st.caption(f"Zacks screens loaded from: **{any_file}**")
+
 # ------------------------------------------------
-# ZACKS UNIFIED ANALYZER
+# ZACKS UNIFIED ANALYZER — TOP N
 # ------------------------------------------------
 st.markdown("## 🔎 Zacks Unified Analyzer — Top Candidates")
-st.caption("Ranked across Growth1, Growth2, Defensive Dividend using composite scoring.")
-
-render_table(top_n_df, label="Top-N Candidates", highlight=True)
+st.caption(
+    "Ranked across Growth1, Growth2, Defensive Dividend using composite scoring."
+)
+if not top_n_df.empty:
+    st.dataframe(top_n_df.style.apply(highlight_rank_1, axis=1))
+else:
+    st.warning("No Zacks candidates available for Top-N view.")
 
 # ------------------------------------------------
-# INDIVIDUAL ZACKS SCREENS
+# ZACKS RAW SCREEN TABLES
 # ------------------------------------------------
 st.markdown("## 📂 Zacks Tactical Screens (Raw Data)")
 
 for sctype in VALID_SCREEN_TYPES:
-    entry = all_screens[sctype]
-    df = entry["df"]
-    filename = entry["file"]
+    item = zacks_files.get(sctype)
+    if not item:
+        with st.expander(f"📄 {sctype} — No file detected"):
+            st.write("No data for this screen.")
+        continue
 
-    with st.expander(f"📄 {sctype} — {filename}"):
-        render_table(df, label=sctype, highlight=True)
+    df, fn = item
+    with st.expander(f"📄 {sctype} — {fn}"):
+        st.dataframe(df.style.apply(highlight_rank_1, axis=1))
 
 # ------------------------------------------------
-# TRAILING STOP MODULE
+# TRAILING STOP ENGINE
 # ------------------------------------------------
 def attach_trailing_stops(df, default_pct):
-    """
-    Adds trailing stop % column for all rows.
-    """
     if df is None or df.empty:
         return df
-
     out = df.copy()
     out["Trailing Stop %"] = default_pct
     return out
@@ -468,10 +463,13 @@ portfolio_with_stops = attach_trailing_stops(portfolio_df, default_trailing_stop
 # PORTFOLIO TABLE
 # ------------------------------------------------
 st.markdown("## 📊 Portfolio Positions (with Trailing Stops)")
-render_table(portfolio_with_stops, label="Portfolio")
+if portfolio_with_stops is not None and not portfolio_with_stops.empty:
+    st.dataframe(portfolio_with_stops)
+else:
+    st.warning("No portfolio positions to display.")
 
 # ------------------------------------------------
-# TACTICAL BUY/SELL/HOLD PANEL
+# TACTICAL OPERATIONS
 # ------------------------------------------------
 st.markdown("## 🎯 Tactical Operations Panel")
 
@@ -490,20 +488,12 @@ with colB2:
 with colB3:
     st.markdown("### Order Status")
     st.info("Order execution module placeholder — integration pending.")
-# ================================================
-# SEGMENT 1D — LOGGING, UTILITIES, AND FUTURE HOOKS
-# v7.3R-4.x
-# ================================================
 
 # ------------------------------------------------
-# COMMAND DECK — EVENT LOGGING
+# EVENT LOGGING
 # ------------------------------------------------
 def log_event(event_type, details):
-    """
-    Simple in-app event logger to show notable actions.
-    """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     st.markdown(
         f"""
         <div style="
@@ -516,10 +506,9 @@ def log_event(event_type, details):
             <b>{timestamp}</b> — <b>{event_type}</b><br>{details}
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
-# Example log triggers
 if buy_ticker and buy_shares > 0:
     log_event("Buy Order Entered", f"Ticker: {buy_ticker}, Shares: {buy_shares}")
 
@@ -527,153 +516,127 @@ if sell_ticker and sell_shares > 0:
     log_event("Sell Order Entered", f"Ticker: {sell_ticker}, Shares: {sell_shares}")
 
 # ------------------------------------------------
-# PORTFOLIO SUMMARY PANEL
+# SUMMARY PANELS
 # ------------------------------------------------
 st.markdown("## 📘 Portfolio Summary")
-
 if portfolio_df is not None and not portfolio_df.empty:
     st.write(f"**Positions Loaded:** {len(portfolio_df)}")
     st.write(f"**Portfolio File:** `{portfolio_filename}`")
 else:
     st.warning("No portfolio file detected.")
 
-# ------------------------------------------------
-# ZACKS SUMMARY PANEL
-# ------------------------------------------------
 st.markdown("## 📒 Zacks Screening Summary")
-
 for sctype in VALID_SCREEN_TYPES:
-    entry = all_screens[sctype]
-    df = entry["df"]
-    filename = entry["file"]
-    if df is not None:
-        st.write(f"**{sctype}:** {len(df)} tickers ({filename})")
+    item = zacks_files.get(sctype)
+    if item:
+        df, fn = item
+        st.write(f"**{sctype}:** {len(df)} tickers ({fn})")
     else:
         st.write(f"**{sctype}:** No file detected")
 
-# ------------------------------------------------
-# DIAGNOSTIC WARNINGS
-# ------------------------------------------------
 if available_cash < 0:
     st.error("Cash value is negative — check portfolio file formatting.")
 
 if scored_candidates is None or scored_candidates.empty:
-    st.warning("No Zacks screening candidates were loaded — analyzer cannot compute Top-N rankings.")
+    st.warning("No Zacks candidates loaded — analyzer cannot compute rankings.")
 
 # ------------------------------------------------
-# FUTURE AUTOMATION HOOKS
+# ANALYTICS CLUSTER — HEAT MAP SUITE
 # ------------------------------------------------
-"""
-Reserved expansion section for:
-
-- Auto-execution workflow  
-- Fidelity API trading bridge  
-- Weekly cycle automation  
-- Daily Top-8 analyzer  
-- Server-side caching engine  
-- Historical signal comparison  
-- Watchlist synchronization  
-
-These hooks allow v7.3R to expand to v7.4R+ without rewriting the core.
-"""
-# ================================================
-# SEGMENT 1E — ANALYTICS CLUSTER (HEAT MAPS)
-# v7.3R-4.4
-# ================================================
-
-import plotly.express as px
-import seaborn as sns
-import matplotlib.pyplot as plt
-
 st.markdown("## 🔥 Analytics Cluster — Heat Map Suite")
 
-# ------------------------------------------------
-# 1️⃣ PORTFOLIO WEIGHT HEAT MAP (Plotly)
-# ------------------------------------------------
+# 1️⃣ Portfolio Weight Heat Map
 if portfolio_df is not None and not portfolio_df.empty:
     weight_df = portfolio_df.copy()
     if "Current Value" in weight_df.columns:
-        weight_df["Weight %"] = weight_df["Current Value"] / weight_df["Current Value"].sum() * 100
+        total_cv = pd.to_numeric(weight_df["Current Value"], errors="coerce").fillna(0).sum()
+        if total_cv > 0:
+            weight_df["Weight %"] = (
+                pd.to_numeric(weight_df["Current Value"], errors="coerce").fillna(0)
+                / total_cv
+            ) * 100
 
-        fig_weight = px.imshow(
-            [weight_df["Weight %"]],
-            labels=dict(color="Weight %"),
-            x=weight_df["Ticker"],
-            y=["Weight"],
-            color_continuous_scale="Blues"
-        )
-        fig_weight.update_layout(height=300)
+            fig_weight = px.imshow(
+                [weight_df["Weight %"]],
+                labels=dict(color="Weight %"),
+                x=weight_df.get("Ticker", pd.Series(range(len(weight_df)))),
+                y=["Weight"],
+                color_continuous_scale="Blues",
+            )
+            fig_weight.update_layout(height=300)
 
-        with st.expander("📘 Portfolio Weight Heat Map"):
-            st.plotly_chart(fig_weight, use_container_width=True)
+            with st.expander("📘 Portfolio Weight Heat Map"):
+                st.plotly_chart(fig_weight, use_container_width=True)
+        else:
+            st.warning("Current Value column totals to 0 — cannot compute weights.")
     else:
-        st.warning("Portfolio file missing 'Current Value' column — cannot build weight map.")
+        st.warning("Portfolio file missing 'Current Value' column — cannot build weight heat map.")
 
-# ------------------------------------------------
-# 2️⃣ GAIN / LOSS % HEAT MAP (Plotly)
-# ------------------------------------------------
+# 2️⃣ Gain / Loss % Heat Map
 if portfolio_df is not None and not portfolio_df.empty:
-    if "Gain/Loss %" in portfolio_df.columns:
+    gain_col = None
+    for cand in ["Gain/Loss %", "Total Gain/Loss Percent", "Today's Gain/Loss Percent"]:
+        if cand in portfolio_df.columns:
+            gain_col = cand
+            break
+
+    if gain_col:
+        gain_series = pd.to_numeric(
+            portfolio_df[gain_col], errors="coerce"
+        ).fillna(0)
         fig_gain = px.imshow(
-            [portfolio_df["Gain/Loss %"]],
-            labels=dict(color="Gain/Loss %"),
-            x=portfolio_df["Ticker"],
-            y=["Gain/Loss %"],
-            color_continuous_scale="RdYlGn"
+            [gain_series],
+            labels=dict(color=gain_col),
+            x=portfolio_df.get("Ticker", pd.Series(range(len(gain_series)))),
+            y=[gain_col],
+            color_continuous_scale="RdYlGn",
         )
         fig_gain.update_layout(height=300)
 
         with st.expander("📈 Gain/Loss % Heat Map"):
             st.plotly_chart(fig_gain, use_container_width=True)
     else:
-        st.warning("Portfolio file missing 'Gain/Loss %' column — cannot build gain/loss map.")
+        st.warning(
+            "Portfolio file missing any recognized gain column — cannot build gain/loss map."
+        )
 
-# ------------------------------------------------
-# 3️⃣ ZACKS COMPOSITE SCORE HEAT MAP (Plotly)
-# ------------------------------------------------
-if not scored_candidates.empty:
+# 3️⃣ Zacks Composite Score Heat Map
+if scored_candidates is not None and not scored_candidates.empty:
     if "CompositeScore" in scored_candidates.columns:
         comp_df = scored_candidates[["Ticker", "CompositeScore"]].reset_index(drop=True)
-
         fig_comp = px.imshow(
             [comp_df["CompositeScore"]],
             labels=dict(color="Composite Score"),
             x=comp_df["Ticker"],
             y=["Composite Score"],
-            color_continuous_scale="Viridis"
+            color_continuous_scale="Viridis",
         )
         fig_comp.update_layout(height=300)
 
         with st.expander("💡 Zacks Composite Score Heat Map"):
             st.plotly_chart(fig_comp, use_container_width=True)
     else:
-        st.warning("CompositeScore column missing — cannot render Zacks heat map.")
+        st.warning("Missing CompositeScore column — cannot generate Zacks heat map.")
 
-# ------------------------------------------------
-# 4️⃣ CORRELATION MATRIX HEAT MAP (Seaborn)
-# ------------------------------------------------
+# 4️⃣ Correlation Matrix (numeric columns)
 if portfolio_df is not None and not portfolio_df.empty:
-
-    # build returns matrix if possible
     numeric_cols = portfolio_df.select_dtypes(include=["float", "int"]).columns
-
     if len(numeric_cols) > 1:
         corr = portfolio_df[numeric_cols].corr()
-
         with st.expander("🧩 Correlation Matrix Heat Map"):
-            fig, ax = plt.subplots(figsize=(10, 7))
+            fig, ax = plt.subplots(figsize=(11, 9))
             sns.heatmap(
                 corr,
                 cmap="coolwarm",
                 annot=True,
                 fmt=".2f",
                 linewidths=0.5,
-                ax=ax
+                ax=ax,
             )
             st.pyplot(fig)
     else:
-        st.warning("Not enough numeric data to compute correlation heat map.")
+        st.warning("Not enough numeric data to compute correlation matrix.")
 
 # ------------------------------------------------
-# END OF FILE
+# END OF FILE — v7.3R-4.6
 # ------------------------------------------------
