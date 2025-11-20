@@ -700,14 +700,6 @@ except Exception as e:
 # ====================================================
 # END OF FILE — v7.3R-5.2
 # ====================================================
+# === Unified Footer (UI Bridge) ===
+render_footer()
 
-st.markdown("---")
-st.markdown(
-    """
-    <div style="text-align:center; color:gray; padding-top:10px;">
-        🧭 Fox Valley Intelligence Engine — Command Deck v7.3R-5.2<br>
-        Real-Time + Synthetic Gain Engine Activated | Historical & Tactical Systems Online<br>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
