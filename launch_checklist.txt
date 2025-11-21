@@ -1,0 +1,45 @@
+========================
+FOX VALLEY INTELLIGENCE ENGINE
+OFFICIAL LAUNCH CHECKLIST
+========================
+
+[ ] 1. Confirm repository contains ONLY final files:
+    fox_valley_intelligence_engine.py
+    modules/tactical_scoring_engine.py
+    modules/risk_and_reporting_engine.py
+    README.md
+    requirements.txt
+    BOD_Tactical_Brief_Template.md
+    data/
+
+[ ] 2. Confirm requirements.txt (must match exactly):
+    pandas
+    numpy
+    matplotlib
+    tabulate
+    openpyxl
+    reportlab
+    python-dateutil
+
+[ ] 3. Confirm Streamlit, plotly, seaborn REMOVED from requirements.txt
+
+[ ] 4. Data folder includes at least:
+    ✔ One Portfolio CSV
+    ✔ One Zacks Growth1 or Growth2
+    ✔ One Defensive Dividend screen
+
+[ ] 5. Run Command:
+    python fox_valley_intelligence_engine.py
+
+[ ] 6. Confirm successful outputs:
+    ✔ Tactical Console Results Displayed
+    ✔ tactical_intelligence_report.csv generated
+    ✔ tactical_intelligence_report.pdf generated
+
+[ ] 7. Confirm no errors appear in terminal.
+
+[ ] 8. Present BOD_Tactical_Brief_Template.md with PDF export.
+
+[ ] 9. Archive validated files into /archive if Snapshot Required.
+
+[ ] 10. Launch Approved — System Validated.
