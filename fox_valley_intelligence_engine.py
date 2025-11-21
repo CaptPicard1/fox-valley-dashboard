@@ -3,106 +3,158 @@ import pandas as pd
 from tabulate import tabulate
 from datetime import datetime
 
-# Tactical scoring engine import
-try:
-    from modules.tactical_scoring_engine import apply_tactical_rules
-except ImportError:
-    print("⚠ Missing tactical_scoring_engine module in /modules. Please add it.")
-    exit()
+from modules.tactical_scoring_engine import apply_tactical_rules
+from modules.risk_and_reporting_engine import apply_stop_logic, export_to_csv, export_to_pdf
 
-
-# ===== PATH SETTINGS =====
 DATA_PATH = "data"
 
 
-# ===== FILE LOADERS =====
-def load_most_recent_file(keyword):
-    """Returns the most recent CSV file in /data matching a keyword."""
-    files = [f for f in os.listdir(DATA_PATH) if keyword.lower() in f.lower() and f.endswith(".csv")]
+def load_most_recent_file(keyword: str):
+    """Return the most recent CSV file in /data containing a keyword."""
+    if not os.path.isdir(DATA_PATH):
+        print(f"⚠ Data folder not found: {DATA_PATH}")
+        return None
+
+    files = [
+        f for f in os.listdir(DATA_PATH)
+        if keyword.lower() in f.lower() and f.lower().endswith(".csv")
+    ]
     if not files:
         return None
-    latest_file = sorted(files)[-1]
-    return os.path.join(DATA_PATH, latest_file)
+
+    files.sort()
+    latest = files[-1]
+    return os.path.join(DATA_PATH, latest)
 
 
 def load_portfolio():
-    """Loads the latest portfolio CSV file."""
+    """Load latest portfolio CSV."""
     path = load_most_recent_file("Portfolio")
-    if path:
-        print(f"\n🗂 Loading Portfolio File: {os.path.basename(path)}")
-        return pd.read_csv(path)
-    print("⚠ No portfolio file found.")
-    return None
+    if not path:
+        print("⚠ No portfolio file found in /data.")
+        return None
+
+    print(f"\n🗂 Loading Portfolio File: {os.path.basename(path)}")
+    try:
+        df = pd.read_csv(path)
+        return df
+    except Exception as e:
+        print(f"⚠ Error loading portfolio file: {e}")
+        return None
 
 
 def load_zacks_files():
-    """Loads Zacks Growth1, Growth2, and Defensive Dividend screens."""
+    """Load latest Zacks screens for Growth1, Growth2, Defensive."""
     categories = ["Growth1", "Growth 1", "Growth2", "Growth 2", "Defensive"]
     loaded = {}
+
     for cat in categories:
         path = load_most_recent_file(cat)
         if path:
             print(f"📥 Loaded Zacks File: {os.path.basename(path)}")
-            loaded[cat] = pd.read_csv(path)
+            try:
+                loaded[cat] = pd.read_csv(path)
+            except Exception as e:
+                print(f"⚠ Error loading {path}: {e}")
+
     if not loaded:
-        print("\n⚠ No Zacks files found.")
+        print("\n⚠ No Zacks screening files found in /data.")
     return loaded
 
 
-# ===== ANALYSIS — Portfolio Summary =====
-def show_portfolio_summary(df):
-    """Displays key portfolio metrics."""
+def show_portfolio_summary(df: pd.DataFrame):
+    """Show high-level portfolio metrics."""
     if df is None or df.empty:
         print("⚠ No portfolio data to analyze.")
         return
 
-    df["Value"] = df["Shares"] * df["Current Price"]
-    total_value = df["Value"].sum()
+    # Try to compute Value
+    if {"Shares", "Current Price"}.issubset(df.columns):
+        df["Value"] = df["Shares"] * df["Current Price"]
+        total_value = df["Value"].sum()
+    else:
+        total_value = None
+
+    cols_to_show = [c for c in ["Ticker", "Shares", "Current Price", "Value"] if c in df.columns]
 
     print("\n📊 Portfolio Summary")
-    print(tabulate(df[["Ticker", "Shares", "Current Price", "Value"]].head(12),
-                   headers='keys', tablefmt='github', floatfmt=".2f"))
-    print(f"\n💰 Estimated Total Portfolio Value: ${total_value:,.2f}")
+    print(tabulate(df[cols_to_show].head(20), headers="keys", tablefmt="github", floatfmt=".2f"))
+
+    if total_value is not None:
+        print(f"\n💰 Estimated Total Portfolio Value: ${total_value:,.2f}")
 
 
-# ===== CROSSMATCH + TACTICAL SIGNALS =====
-def crossmatch_with_zacks(portfolio_df, zacks_data):
-    """Matches portfolio tickers with Zacks screens and applies tactical logic."""
-    if portfolio_df is None or not zacks_data:
-        print("\n⚠ Cannot crossmatch — missing data.")
-        return
+def crossmatch_with_zacks(portfolio_df: pd.DataFrame, zacks_data: dict):
+    """Crossmatch portfolio tickers with Zacks lists and apply tactical logic."""
+    if portfolio_df is None or portfolio_df.empty:
+        print("\n⚠ No portfolio data available for crossmatch.")
+        return None
 
-    portfolio_df["Ticker"] = portfolio_df["Ticker"].str.upper()
+    if not zacks_data:
+        print("\n⚠ No Zacks data available for crossmatch.")
+        return None
+
+    if "Ticker" not in portfolio_df.columns:
+        print("\n⚠ Portfolio file missing 'Ticker' column.")
+        return None
+
+    portfolio_df = portfolio_df.copy()
+    portfolio_df["Ticker"] = portfolio_df["Ticker"].astype(str).str.upper()
+
     all_matches = []
 
-    for category, zacks_df in zacks_data.items():
-        zacks_df["Ticker"] = zacks_df["Ticker"].str.upper()
+    for category, zdf in zacks_data.items():
+        if "Ticker" not in zdf.columns:
+            continue
 
-        if "Zacks Rank" in zacks_df.columns:
-            zacks_df["Zacks Rank"] = pd.to_numeric(zacks_df["Zacks Rank"], errors="coerce")
+        zdf = zdf.copy()
+        zdf["Ticker"] = zdf["Ticker"].astype(str).str.upper()
 
-        merged = pd.merge(portfolio_df, zacks_df, on="Ticker", how="inner")
+        if "Zacks Rank" in zdf.columns:
+            zdf["Zacks Rank"] = pd.to_numeric(zdf["Zacks Rank"], errors="coerce")
+
+        merged = pd.merge(portfolio_df, zdf, on="Ticker", how="inner", suffixes=("", "_z"))
         if not merged.empty:
             merged["Screen Category"] = category
             all_matches.append(merged)
 
-    if all_matches:
-        result = pd.concat(all_matches, ignore_index=True)
-        result = apply_tactical_rules(result)  # Charlie Segment scoring
+    if not all_matches:
+        print("\n📭 No matches found between portfolio and any Zacks screen.")
+        return None
 
-        print("\n🎯 Tactical Signals — Portfolio Intelligence Report")
-        print(tabulate(result[[
-            "Ticker", "Shares", "Current Price", "Gain/Loss %",
-            "Zacks Rank", "Action", "Screen Category"
-        ]], headers='keys', tablefmt='github', floatfmt=".2f"))
-    else:
-        print("\n📭 No matches found between portfolio and Zacks screens.")
+    result = pd.concat(all_matches, ignore_index=True)
+
+    # Apply tactical rules (Zacks-based) and stop logic
+    result = apply_tactical_rules(result)
+    result = apply_stop_logic(result)
+
+    # Select columns to display if they exist
+    display_cols = [
+        "Ticker",
+        "Shares",
+        "Current Price",
+        "Gain/Loss %",
+        "Zacks Rank",
+        "Action",
+        "Screen Category",
+        "Stop Recommendation",
+    ]
+    display_cols = [c for c in display_cols if c in result.columns]
+
+    print("\n🛡 Tactical Intelligence Output — Actionable Orders")
+    print(tabulate(result[display_cols], headers="keys", tablefmt="github", floatfmt=".2f"))
+
+    # Exports
+    export_to_csv(result)
+    export_to_pdf(result)
+
+    return result
 
 
-# ===== MAIN EXECUTION =====
 def main():
     print("\n🧭 Fox Valley Intelligence Engine — Tactical Console (CLI Edition)")
     print("==================================================================\n")
+    print(f"Run Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
     portfolio_df = load_portfolio()
     zacks_files = load_zacks_files()
@@ -110,8 +162,7 @@ def main():
     show_portfolio_summary(portfolio_df)
     crossmatch_with_zacks(portfolio_df, zacks_files)
 
-    print("\n🚀 Engine Execution Complete — Charlie Segment Active.")
-    print("Next: Stop-Loss Decision Engine + CSV/PDF Tactical Report Export (Delta Segment).")
+    print("\n🚀 Engine Execution Complete — Final Assembly Online.\n")
 
 
 if __name__ == "__main__":
