@@ -1,0 +1,50 @@
+====================================
+FOX VALLEY INTELLIGENCE ENGINE
+DEPLOYMENT AND FUTURE EXPANSION NOTES
+====================================
+
+PHASE 1 — CURRENT INSTALLATION (COMPLETE)
+----------------------------------------
+✔ Standalone Python Tactical Engine
+✔ Streamlit-free console interface
+✔ CSV & PDF tactical exports
+✔ Supports recurring tactical reviews
+
+
+PHASE 2 — OPTIONAL FUTURE ENHANCEMENTS
+--------------------------------------
+1. Desktop UI (PySimpleGUI or Tkinter)
+2. Flask Web UI — Local tactical dashboard
+3. FastAPI microservice — Tactical API endpoint
+4. Scheduled Email Reports (PDF/CSV auto-send)
+5. SQLite or PostgreSQL portfolio persistence
+6. Integration with brokerage API (Fidelity, IBKR, Alpaca)
+
+
+RUN OPTIONS — CONSOLE
+---------------------
+cd fox-valley-dashboard
+python fox_valley_intelligence_engine.py
+
+
+EXPORT LOCATIONS
+----------------
+tactical_intelligence_report.csv
+tactical_intelligence_report.pdf
+Printed tactical tables (interactive CLI)
+
+
+MAINTENANCE STEPS
+-----------------
+1. Update /data folder with new CSV files
+2. No need to change filenames — auto-detection works
+3. Archive old CSVs into /archive if preservation needed
+4. Do NOT modify core modules unless advancing to Phase 2
+
+
+CLOSING
+-------
+This version (v7.3R Final Assembly) is stable, repeatable,
+and fit for tactical decision deployment.
+
+No further modification needed for operational use.
