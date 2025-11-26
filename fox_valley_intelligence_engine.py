@@ -3,8 +3,10 @@ import pandas as pd
 from tabulate import tabulate
 from datetime import datetime
 
+# Module imports (already committed)
 from modules.tactical_scoring_engine import apply_tactical_rules
 from modules.risk_and_reporting_engine import apply_stop_logic, export_to_csv, export_to_pdf
+from modules.profit_risk_analyzer import evaluate_profit_risk  # NEW MODULE INTEGRATION
 
 DATA_PATH = "data"
 
@@ -37,6 +39,7 @@ def load_portfolio():
     print(f"\n🗂 Loading Portfolio File: {os.path.basename(path)}")
     try:
         df = pd.read_csv(path)
+        df['Ticker'] = df['Ticker'].astype(str).str.upper()
         return df
     except Exception as e:
         print(f"⚠ Error loading portfolio file: {e}")
@@ -44,8 +47,8 @@ def load_portfolio():
 
 
 def load_zacks_files():
-    """Load latest Zacks screens for Growth1, Growth2, Defensive."""
-    categories = ["Growth1", "Growth 1", "Growth2", "Growth 2", "Defensive"]
+    """Load latest Zacks screens for Growth and Defensive groups."""
+    categories = ["Growth", "Defensive"]
     loaded = {}
 
     for cat in categories:
@@ -53,7 +56,9 @@ def load_zacks_files():
         if path:
             print(f"📥 Loaded Zacks File: {os.path.basename(path)}")
             try:
-                loaded[cat] = pd.read_csv(path)
+                zdf = pd.read_csv(path)
+                zdf['Ticker'] = zdf['Ticker'].astype(str).str.upper()
+                loaded[cat] = zdf
             except Exception as e:
                 print(f"⚠ Error loading {path}: {e}")
 
@@ -68,38 +73,25 @@ def show_portfolio_summary(df: pd.DataFrame):
         print("⚠ No portfolio data to analyze.")
         return
 
-    # Try to compute Value
-    if {"Shares", "Current Price"}.issubset(df.columns):
-        df["Value"] = df["Shares"] * df["Current Price"]
-        total_value = df["Value"].sum()
-    else:
-        total_value = None
+    cols = [c for c in ["Ticker", "Quantity", "Last Price", "Current Value", "Total Gain/Loss Percent"] if c in df.columns]
 
-    cols_to_show = [c for c in ["Ticker", "Shares", "Current Price", "Value"] if c in df.columns]
+    print("\n📊 Portfolio Holdings Overview")
+    print(tabulate(df[cols].head(20), headers="keys", tablefmt="github", floatfmt=".2f"))
 
-    print("\n📊 Portfolio Summary")
-    print(tabulate(df[cols_to_show].head(20), headers="keys", tablefmt="github", floatfmt=".2f"))
-
-    if total_value is not None:
+    if "Current Value" in df.columns:
+        total_value = df["Current Value"].sum()
         print(f"\n💰 Estimated Total Portfolio Value: ${total_value:,.2f}")
 
 
 def crossmatch_with_zacks(portfolio_df: pd.DataFrame, zacks_data: dict):
-    """Crossmatch portfolio tickers with Zacks lists and apply tactical logic."""
+    """Match tickers across Zacks screens and apply tactical logic."""
     if portfolio_df is None or portfolio_df.empty:
-        print("\n⚠ No portfolio data available for crossmatch.")
+        print("\n⚠ No portfolio data available for tactical analysis.")
         return None
 
     if not zacks_data:
-        print("\n⚠ No Zacks data available for crossmatch.")
+        print("\n⚠ No Zacks datasets available for tactical crossmatch.")
         return None
-
-    if "Ticker" not in portfolio_df.columns:
-        print("\n⚠ Portfolio file missing 'Ticker' column.")
-        return None
-
-    portfolio_df = portfolio_df.copy()
-    portfolio_df["Ticker"] = portfolio_df["Ticker"].astype(str).str.upper()
 
     all_matches = []
 
@@ -107,44 +99,30 @@ def crossmatch_with_zacks(portfolio_df: pd.DataFrame, zacks_data: dict):
         if "Ticker" not in zdf.columns:
             continue
 
-        zdf = zdf.copy()
-        zdf["Ticker"] = zdf["Ticker"].astype(str).str.upper()
-
-        if "Zacks Rank" in zdf.columns:
-            zdf["Zacks Rank"] = pd.to_numeric(zdf["Zacks Rank"], errors="coerce")
-
         merged = pd.merge(portfolio_df, zdf, on="Ticker", how="inner", suffixes=("", "_z"))
         if not merged.empty:
             merged["Screen Category"] = category
             all_matches.append(merged)
 
     if not all_matches:
-        print("\n📭 No matches found between portfolio and any Zacks screen.")
+        print("\n📭 No matches from Zacks screens.")
         return None
 
     result = pd.concat(all_matches, ignore_index=True)
 
-    # Apply tactical rules (Zacks-based) and stop logic
+    # Apply tactical logic: Rank + Stop loss controls
     result = apply_tactical_rules(result)
     result = apply_stop_logic(result)
 
-    # Select columns to display if they exist
     display_cols = [
-        "Ticker",
-        "Shares",
-        "Current Price",
-        "Gain/Loss %",
-        "Zacks Rank",
-        "Action",
-        "Screen Category",
-        "Stop Recommendation",
+        "Ticker", "Quantity", "Current Value", "Zacks Rank",
+        "Action", "Screen Category", "Stop Recommendation"
     ]
     display_cols = [c for c in display_cols if c in result.columns]
 
     print("\n🛡 Tactical Intelligence Output — Actionable Orders")
     print(tabulate(result[display_cols], headers="keys", tablefmt="github", floatfmt=".2f"))
 
-    # Exports
     export_to_csv(result)
     export_to_pdf(result)
 
@@ -156,13 +134,23 @@ def main():
     print("==================================================================\n")
     print(f"Run Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
+    # Load core data
     portfolio_df = load_portfolio()
     zacks_files = load_zacks_files()
 
+    # Display portfolio insights
     show_portfolio_summary(portfolio_df)
-    crossmatch_with_zacks(portfolio_df, zacks_files)
 
-    print("\n🚀 Engine Execution Complete — Final Assembly Online.\n")
+    # Tactical crossmatch
+    tactical_df = crossmatch_with_zacks(portfolio_df, zacks_files)
+
+    # Profit & Risk Module
+    if tactical_df is not None:
+        evaluate_profit_risk(tactical_df)
+
+    print("\n🚀 Engine Execution Complete — Final Assembly Online.")
+    print("📁 Reports exported: tactical_intelligence_report.csv & .pdf")
+    print("📈 Profit-Risk analyzer executed successfully.\n")
 
 
 if __name__ == "__main__":
